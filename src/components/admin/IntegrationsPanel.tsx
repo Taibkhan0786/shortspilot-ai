@@ -50,6 +50,27 @@ const SCOPES_DETAIL = [
   { scope: "youtubepartner", why: "Advanced channel management (optional)" },
 ];
 
+/** Hard-safe fallbacks so the sliders never crash on a partial API response. */
+const TUNABLE_FALLBACKS: Tunables = {
+  temperature: 0.8,
+  supportTemperature: 0.5,
+  maxTokens: 4096,
+  timeoutMs: 60000,
+};
+
+/** Guarantees every numeric field exists (API responses may be partial). */
+function normalizeTunables(t?: Tunables | null): Tunables | null {
+  if (!t || typeof t !== "object") return null;
+  const d = t.defaults ?? {};
+  return {
+    temperature: typeof t.temperature === "number" ? t.temperature : (typeof d.temperature === "number" ? d.temperature : TUNABLE_FALLBACKS.temperature),
+    supportTemperature: typeof t.supportTemperature === "number" ? t.supportTemperature : (typeof d.supportTemperature === "number" ? d.supportTemperature : TUNABLE_FALLBACKS.supportTemperature),
+    maxTokens: typeof t.maxTokens === "number" ? t.maxTokens : (typeof d.maxTokens === "number" ? d.maxTokens : TUNABLE_FALLBACKS.maxTokens),
+    timeoutMs: typeof t.timeoutMs === "number" ? t.timeoutMs : (typeof d.timeoutMs === "number" ? d.timeoutMs : TUNABLE_FALLBACKS.timeoutMs),
+    defaults: t.defaults,
+  };
+}
+
 export function IntegrationsPanel() {
   const [config, setConfig] = useState<Config | null>(null);
   const [aiConfig, setAiConfig] = useState<AiConfig | null>(null);
@@ -70,7 +91,7 @@ export function IntegrationsPanel() {
     api.get<AiConfig>("/api/v1/admin/ai/config").then((c) => {
       setAiConfig(c);
       setGeminiModel(c.gemini.model && c.gemini.model !== "auto" ? c.gemini.model : "");
-      if (c.tunables) setTunables(c.tunables);
+      if (c.tunables) setTunables(normalizeTunables(c.tunables));
       if (c.veo) {
         setVeoEnabled(c.veo.enabled);
         if (c.veo.engine) setVeoEngine(c.veo.engine);
@@ -220,7 +241,7 @@ export function IntegrationsPanel() {
         ...(veo !== undefined ? { veoEnabled: veo } : {}),
         ...(engine !== undefined ? { veoEngine: engine } : {}),
       });
-      if (res.tunables) setTunables(res.tunables);
+      if (res.tunables) setTunables(normalizeTunables(res.tunables));
       if (res.veo) {
         setVeoEnabled(res.veo.enabled);
         if (res.veo.engine) setVeoEngine(res.veo.engine);
@@ -470,7 +491,7 @@ export function IntegrationsPanel() {
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-medium">Script / idea creativity (temperature)</Label>
-                  <span className="rounded-md bg-accent/50 px-2 py-0.5 font-mono text-xs text-foreground">{tunables.temperature.toFixed(2)}</span>
+                  <span className="rounded-md bg-accent/50 px-2 py-0.5 font-mono text-xs text-foreground">{(tunables.temperature ?? TUNABLE_FALLBACKS.temperature).toFixed(2)}</span>
                 </div>
                 <Slider
                   value={[tunables.temperature]}
@@ -485,7 +506,7 @@ export function IntegrationsPanel() {
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs font-medium">Support chat (temperature)</Label>
-                  <span className="rounded-md bg-accent/50 px-2 py-0.5 font-mono text-xs text-foreground">{tunables.supportTemperature.toFixed(2)}</span>
+                  <span className="rounded-md bg-accent/50 px-2 py-0.5 font-mono text-xs text-foreground">{(tunables.supportTemperature ?? TUNABLE_FALLBACKS.supportTemperature).toFixed(2)}</span>
                 </div>
                 <Slider
                   value={[tunables.supportTemperature]}

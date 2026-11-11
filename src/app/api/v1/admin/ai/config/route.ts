@@ -158,7 +158,7 @@ export const POST = handler(async (req: NextRequest) => {
       poolKeys: pool.map(maskKey),
     },
     elevenlabs: { configured: Boolean(await getElevenLabsKey().catch(() => null)) },
-    tunables: { ...getGeminiTunables(), defaults: GEMINI_TUNABLE_DEFAULTS },
+    tunables: { ...(await getGeminiTunables()), defaults: GEMINI_TUNABLE_DEFAULTS },
     veo: {
       enabled: (await getAiSetting("veo_enabled").catch(() => null)) === "true",
       engine: (await getAiSetting("veo_engine").catch(() => null))?.trim() === "omni" ? "omni" : "veo3",
