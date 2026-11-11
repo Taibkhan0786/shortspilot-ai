@@ -13,7 +13,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "postinstall": "prisma generate",
+    "setup": "prisma generate && prisma db push && tsx prisma/seed.ts",
+    "postinstall": "prisma generate && prisma db push || echo \"[setup] prisma db push skipped - run 'npx prisma db push' manually if you see Unknown argument errors\"",
     "test:gemini": "node --experimental-strip-types tests/gemini.test.mts"
   },
   "dependencies": {

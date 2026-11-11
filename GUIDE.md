@@ -308,6 +308,7 @@ The E2E suite registers a fresh user, runs the whole pipeline (ideas → scripts
 
 | Symptom | Cause & fix |
 |---|---|
+| **Prisma error `Unknown argument 'motionPrompt'` (or any other field) on render/automation** | Your local DB + generated client are older than the code. Fix in 1 minute: stop the dev server, then run `npx prisma db push` and `npx prisma generate`, and delete the `.next` folder (`rmdir /s /q .next` on Windows), then `npm run dev`. Newer builds auto-run this on `npm install` (postinstall) — if you extracted a new version **over** an old folder, always run these two commands once |
 | **LAN/phone shows endless buffering on :3000** | Dev assets are origin-restricted — the app auto-allowlists your LAN IPs (`next.config.ts`). Still stuck? Allow port 3000 in Windows Firewall: `netsh advfirewall firewall add rule name="ShortsPilot Dev 3000" dir=in action=allow protocol=TCP localport=3000`, or force it with `DEV_ORIGINS=<your-ip> npm run dev` |
 | **“No LLM provider configured” when generating ideas/scripts** | You haven't added a Gemini key yet — get a free one at aistudio.google.com/apikey (must start with `AIza`) and save it via **Verify & save** in /admin → API & Integrations. Voice (Edge TTS), visuals (Pollinations) and search (DuckDuckGo/Google News) already run key-free |
 | **Checkout says a gateway is “not configured”** | Admin must save keys in /admin → Payments (Razorpay for ₹, PayPal for $) |
