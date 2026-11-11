@@ -6,6 +6,7 @@ import { audit } from "@/lib/notify";
 import {
   getAiSetting,
   getElevenLabsKey,
+  getElevenLabsKeySource,
   getGeminiTunables,
   getVoiceProvider,
   invalidateAiConfigCache,
@@ -39,7 +40,10 @@ export const GET = handler(async (req: NextRequest) => {
       poolSize: pool.length,
       poolKeys: pool.map(maskKey),
     },
-    elevenlabs: { configured: Boolean(await getElevenLabsKey().catch(() => null)) },
+    elevenlabs: {
+      configured: Boolean(await getElevenLabsKey().catch(() => null)),
+      source: await getElevenLabsKeySource().catch(() => null),
+    },
     voiceProvider: await getVoiceProvider(),
     tunables: {
       ...tunables,
@@ -164,7 +168,10 @@ export const POST = handler(async (req: NextRequest) => {
       poolSize: pool.length,
       poolKeys: pool.map(maskKey),
     },
-    elevenlabs: { configured: Boolean(await getElevenLabsKey().catch(() => null)) },
+    elevenlabs: {
+      configured: Boolean(await getElevenLabsKey().catch(() => null)),
+      source: await getElevenLabsKeySource().catch(() => null),
+    },
     voiceProvider: await getVoiceProvider(),
     tunables: { ...(await getGeminiTunables()), defaults: GEMINI_TUNABLE_DEFAULTS },
     veo: {

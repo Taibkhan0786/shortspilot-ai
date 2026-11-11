@@ -5,7 +5,7 @@ import os from "os";
 import { saveBuffer } from "@/lib/storage";
 import { getElevenLabsKey, getVoiceProvider } from "./config";
 import { geminiTtsWav, GEMINI_VOICE_MAP } from "./geminiTts";
-import { elevenLabsMp3, ELEVEN_VOICES } from "./elevenlabs";
+import { elevenLabsMp3, ELEVEN_VOICES, ELEVEN_TO_CLASSIC_FALLBACK, isElevenVoice } from "./elevenlabs";
 import { detectLang } from "./lang";
 import { getOrderedKeys, withKeyPool } from "./keyPool";
 
@@ -29,6 +29,19 @@ export const VOICES = [
   { id: "kazi", name: "Kazi", description: "Clear & standard", accent: "Neutral", gender: "Male" },
   { id: "douji", name: "Douji", description: "Natural & smooth", accent: "Neutral", gender: "Male" },
   { id: "luodo", name: "Luodo", description: "Expressive & engaging", accent: "Neutral", gender: "Male" },
+  // — ElevenLabs premium voices (most natural, Hindi supported, needs ElevenLabs key) —
+  { id: "e-sarah", name: "ElevenLabs Sarah", description: "Soft & youthful — studio quality", accent: "ElevenLabs", gender: "Female" },
+  { id: "e-matilda", name: "ElevenLabs Matilda", description: "Friendly & warm — studio quality", accent: "ElevenLabs", gender: "Female" },
+  { id: "e-jessica", name: "ElevenLabs Jessica", description: "Trendy & casual — studio quality", accent: "ElevenLabs", gender: "Female" },
+  { id: "e-alice", name: "ElevenLabs Alice", description: "Confident British — studio quality", accent: "ElevenLabs", gender: "Female" },
+  { id: "e-george", name: "ElevenLabs George", description: "Warm British narrator — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-daniel", name: "ElevenLabs Daniel", description: "Authoritative British — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-adam", name: "ElevenLabs Adam", description: "Deep & clear — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-eric", name: "ElevenLabs Eric", description: "Friendly narrator — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-brian", name: "ElevenLabs Brian", description: "Deep narration — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-chris", name: "ElevenLabs Chris", description: "Casual & husky — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-antoni", name: "ElevenLabs Antoni", description: "Expressive & engaging — studio quality", accent: "ElevenLabs", gender: "Male" },
+  { id: "e-will", name: "ElevenLabs Will", description: "Friendly everyman — studio quality", accent: "ElevenLabs", gender: "Male" },
 ] as const;
 
 export type VoiceId = (typeof VOICES)[number]["id"];
@@ -51,6 +64,15 @@ export const GOOGLE_VOICE_MAP: Record<string, string> = {
 
 export function isGoogleVoice(id: string): boolean {
   return id in GOOGLE_VOICE_MAP;
+}
+
+export function isElevenLabsVoice(id: string): boolean {
+  return isElevenVoice(id);
+}
+
+/** e-* voice → classic twin used when no ElevenLabs key is available. */
+function classicFallbackFor(voice: string): string {
+  return ELEVEN_TO_CLASSIC_FALLBACK[voice] ?? "tongtong";
 }
 
 export function splitTextIntoChunks(text: string, maxLength = 950): string[] {
@@ -379,6 +401,26 @@ export async function ttsBuffer(
 ): Promise<Buffer> {
   const clampedSpeed = Math.min(2.0, Math.max(0.5, speed));
   const provider = await getVoiceProvider().catch(() => "auto" as const);
+
+  // ——— Dedicated ElevenLabs voices (e-*): ElevenLabs always speaks them first ———
+  if (isElevenVoice(voice)) {
+    const elKey = await getElevenLabsKey().catch(() => null);
+    if (elKey) {
+      try {
+        const mp3 = await elevenLabsMp3(text, voice, elKey);
+        console.error(`[tts] provider: ElevenLabs (${voice})`);
+        return await toWavViaFfmpeg(mp3, "mp3", clampedSpeed);
+      } catch (e) {
+        console.error(
+          `[tts] ElevenLabs voice ${voice} failed (${e instanceof Error ? e.message.slice(0, 140) : e}) — falling back to the classic catalog`
+        );
+      }
+    } else {
+      console.error("[tts] ElevenLabs voice selected but no key configured — using free fallback");
+    }
+    // degrade gracefully to the classic twin (same gender/vibe) and continue down the chain
+    voice = classicFallbackFor(voice);
+  }
 
   // ——— Admin forced "elevenlabs": skip z-ai entirely, ElevenLabs speaks every voice ———
   if (provider === "elevenlabs") {

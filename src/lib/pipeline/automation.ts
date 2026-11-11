@@ -168,6 +168,7 @@ export async function runAutomationPipeline(userId: string) {
           assetUrl: visualMap.get(s.sceneNumber) ?? "",
           audioUrl: a?.url ?? "",
           caption: s.caption,
+          motionPrompt: s.motion || null,
           startTime: start,
           endTime: end,
         },

@@ -68,6 +68,7 @@ export type VeoClipResult = { video: Buffer; model: string; key: string };
 export function cinematicMotionDirective(engine: VeoEngine = "veo3"): string {
   return [
     "Animate this still image as an ultra-realistic cinematic video shot.",
+    "CHARACTER LOCK: keep the main character's face, hairstyle, outfit and body EXACTLY identical to the input image for the whole shot — the same person, no identity drift.",
     "Real human subjects move naturally: subtle breathing, micro facial expressions, natural hand gestures, eyes blink; hair and clothing react to ambient wind.",
     "Subject and background move with gentle parallax depth; the environment stays alive (soft light shifts, floating particles, ambient motion).",
     engine === "omni"

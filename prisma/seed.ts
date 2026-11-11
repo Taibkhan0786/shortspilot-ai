@@ -89,6 +89,21 @@ async function main() {
   }
   console.log("✓ Plans seeded");
 
+  // Fresh-install defaults: premium voice engine + Flow-style cinematic motion.
+  // (Existing values set by an Admin are never overwritten.)
+  const defaultSettings: { key: string; value: string }[] = [
+    { key: "voice_provider", value: "elevenlabs" }, // ElevenLabs speaks every voice first (falls back to Gemini/Edge free TTS without a key)
+    { key: "veo_enabled", value: "true" }, // real AI character/scene motion (falls back to cinematic zoom automatically when unavailable)
+    { key: "veo_engine", value: "veo3" }, // Flow-AI cinematic quality (Omni Flash = fast mode)
+  ];
+  for (const s of defaultSettings) {
+    const existing = await db.appSetting.findUnique({ where: { key: s.key } });
+    if (!existing) {
+      await db.appSetting.create({ data: s });
+    }
+  }
+  console.log("✓ Default settings seeded (voice_provider=elevenlabs, veo_enabled=true)");
+
   const adminEmail = "admin@shortspilot.ai";
   const existing = await db.user.findUnique({ where: { email: adminEmail } });
   if (!existing) {

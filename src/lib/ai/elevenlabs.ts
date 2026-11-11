@@ -1,19 +1,58 @@
 /**
  * ElevenLabs text-to-speech (most natural voices, multilingual incl. Hindi).
  * Pure module (no project imports) so it can be unit tested with a mock fetch.
- * API key is saved by the Admin in /admin → API & Integrations → Voice.
+ * API key is saved by the Admin in /admin → API & Integrations → Voice,
+ * or bootstrapped via the ELEVENLABS_API_KEY .env variable.
+ *
+ * IMPORTANT: every voice id below was verified against the free/starter
+ * ElevenLabs plan. "Library" voices that need a paid plan return
+ * 402 paid_plan_required — those are deliberately NOT mapped here.
  */
 
-/** In-app voice id → ElevenLabs premade voice id. */
+/** In-app voice id → ElevenLabs premade voice id (all verified 200 OK on free plans). */
 export const ELEVEN_VOICES: Record<string, string> = {
-  tongtong: "21m00Tcm4TlvDq8ikWAM", // Rachel — warm female
-  chuichui: "EXAVITQu4vr4xnSDxMaL", // Sarah — lively female
-  xiaochen: "XB0fDUnXU5powFXDhCwa", // Charlotte — calm female
-  jam: "JBFqnCBsd6RMkjVDRZzb", // George — British male
-  kazi: "pNInz6obpgDQGcFmaJgB", // Adam — clear male
-  douji: "TxGEqnHWrfWFTfGW9XjX", // Josh — smooth male
+  // — Classic catalog ids (Studio "Neutral" voices) speak through ElevenLabs too —
+  tongtong: "EXAVITQu4vr4xnSDxMaL", // Sarah — warm female
+  chuichui: "cgSgspJ2msm6clMCkdW9", // Jessica — lively female
+  xiaochen: "XrExE9yKIg1WjnnlVkGX", // Matilda — calm female
+  jam: "JBFqnCBsd6RMkjVDRZzb", // George — British male narrator
+  kazi: "cjVigY5qzO86Huf0OWal", // Eric — clear male
+  douji: "nPczCjzI2devNBz1zQrb", // Brian — smooth deep male
   luodo: "ErXwobaYiN019PkySvjV", // Antoni — expressive male
+  // — Dedicated ElevenLabs premium catalog (shown in Studio as "ElevenLabs" tag) —
+  "e-sarah": "EXAVITQu4vr4xnSDxMaL", // Sarah — soft, youthful American female
+  "e-matilda": "XrExE9yKIg1WjnnlVkGX", // Matilda — friendly, warm American female
+  "e-jessica": "cgSgspJ2msm6clMCkdW9", // Jessica — trendy, casual American female
+  "e-alice": "Xb7hH8MSUJpSbSDYk0k2", // Alice — confident British female
+  "e-george": "JBFqnCBsd6RMkjVDRZzb", // George — warm British male narrator
+  "e-daniel": "onwK4e9ZLuTAKqWW03F9", // Daniel — authoritative British male
+  "e-adam": "pNInz6obpgDQGcFmaJgB", // Adam — deep, clear American male
+  "e-eric": "cjVigY5qzO86Huf0OWal", // Eric — friendly American male
+  "e-brian": "nPczCjzI2devNBz1zQrb", // Brian — deep American male narration
+  "e-chris": "iP95p4xoKVk53GoZ742B", // Chris — casual, husky American male
+  "e-antoni": "ErXwobaYiN019PkySvjV", // Antoni — well-rounded, expressive male
+  "e-will": "bIHbv24MWmeRgasZH58o", // Will — friendly everyman American male
 };
+
+/** e-* voice → classic catalog twin used when no ElevenLabs key is configured. */
+export const ELEVEN_TO_CLASSIC_FALLBACK: Record<string, string> = {
+  "e-sarah": "tongtong",
+  "e-matilda": "xiaochen",
+  "e-jessica": "chuichui",
+  "e-alice": "xiaochen",
+  "e-george": "jam",
+  "e-daniel": "jam",
+  "e-adam": "kazi",
+  "e-eric": "kazi",
+  "e-brian": "douji",
+  "e-chris": "luodo",
+  "e-antoni": "luodo",
+  "e-will": "douji",
+};
+
+export function isElevenVoice(id: string): boolean {
+  return id.startsWith("e-") && id in ELEVEN_VOICES;
+}
 
 export class ElevenLabsError extends Error {
   status: number;

@@ -58,10 +58,10 @@ Everything is metered with **credits**, gated by **plan limits**, and observable
 | Stage | What happens | Credits |
 |---|---|---|
 | **Idea generation** | LLM + optional web research produces trending ideas for your niche/language | 1 |
-| **Script generation** | Structured scene JSON: hook, 4–8 scenes (narration + visualPrompt + caption), CTA, duration estimate. Regenerate makes a new version | 2 |
+| **Script generation** | Structured scene JSON: hook, 4–8 scenes (narration + visualPrompt + motion + caption), CTA, duration estimate. **Character consistency**: one recurring main character (same age/hairstyle/outfit wording) is described identically in every scene so images and AI motion clips show the same person. Regenerate makes a new version | 2 |
 | **Voiceover** | Full narration track + per-scene audio chunks via TTS. Failed calls retry with exponential backoff. The admin picks which engine speaks first (Voice provider setting) | 4 |
 | **Visuals** | One AI image per scene in your chosen style. Runs as an **async VisualJob** (never blocks HTTP — avoids gateway 502s); client polls `/visuals/status` for live progress. Rate-limited calls retry with backoff | 1.5/scene |
-| **Render** | Background worker: builds each scene segment (image + audio), concatenates with FFmpeg, adds captions → 9:16 MP4. Credits refunded automatically on failure | 3 |
+| **Render** | Background worker: builds each scene segment (image + audio), concatenates with FFmpeg, adds captions → 9:16 MP4. When Veo is enabled each scene still is first animated into a real AI clip (Flow-style character/scene motion) and the clip is used instead of the static zoom-pan. Credits refunded automatically on failure | 3 |
 | **Quality check** | Worker validates duration/size, then sets `PENDING_APPROVAL` | — |
 | **Publish** | Resumable-upload adapter (sandbox now; OAuth channels store encrypted refresh tokens for real uploads). Metadata auto-generated | 1 |
 | **Sync (YouTube)** | Live fetch of channel stats + last 25 uploads; every sync appends a growth datapoint | free |
@@ -69,6 +69,31 @@ Everything is metered with **credits**, gated by **plan limits**, and observable
 ### Video status lifecycle
 
 `DRAFT → RENDERING → QUALITY_CHECK → PENDING_APPROVAL → APPROVED → SCHEDULED → PUBLISHING → PUBLISHED` (also `FAILED`, `REJECTED`; failure auto-refunds render credits).
+
+### Voice engines — natural voices (ElevenLabs + Google AI Studio)
+
+The Voice Library ships three voice families:
+
+| Family | Voices | Engine | Key needed |
+|---|---|---|---|
+| **ElevenLabs** (studio quality, Hindi supported) | Sarah, Matilda, Jessica, Alice, George, Daniel, Adam, Eric, Brian, Chris, Antoni, Will | ElevenLabs `eleven_multilingual_v2` | ElevenLabs key |
+| **Google** (original Google voices) | Kore, Puck, Charon, Leda, Zephyr, Fenrir, Aoede, Orus | Gemini TTS via your Gemini account pool | Gemini key(s) |
+| **Neutral / British** (free) | Tongtong, Chuichui, Xiaochen, Jam, Kazi, Douji, Luodo | Microsoft Edge neural (free) → ElevenLabs → Gemini when keys exist | none |
+
+- The admin picks the engine order in **Admin → API & Integrations → Voice provider** (`ElevenLabs first` = every voice speaks through ElevenLabs when possible).
+- The ElevenLabs key can be pasted in the admin panel (encrypted) **or** bootstrapped via `ELEVENLABS_API_KEY` in `.env` — the admin panel shows which source is active.
+- Hindi/Devanagari narration is auto-detected and supported on ElevenLabs and Google voices.
+
+### Flow-style AI motion (Veo — real character & scene video)
+
+When enabled (**Admin → API & Integrations → Video engine**, on by default), every scene still is animated by **Google Veo** into a short realistic AI clip before rendering:
+
+- **Veo 3 — Flow AI cinematic**: natural human motion, filmic camera work, parallax depth (best realism, slower).
+- **Omni Flash — fast mode**: quickest pipeline for bulk renders.
+- **Character lock**: the motion prompt keeps the character identical to the scene image (no face drift), and scripts already describe one consistent character per video.
+- All Gemini accounts in the pool rotate automatically; an account without Veo quota is skipped.
+- Any scene that cannot be animated falls back to the built-in cinematic zoom-pan with a warning — renders never fail because of Veo.
+- Requires a **billing-enabled** Gemini key (Veo is a paid Google API). Test it with the **Test Veo** button in the admin panel.
 
 ---
 

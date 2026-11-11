@@ -46,9 +46,22 @@ export async function getGeminiKey(): Promise<string | null> {
   return cached("gemini_api_key", true);
 }
 
-/** ElevenLabs API key (optional, best-quality voices). Configured via /admin -> API & Integrations. */
+/** ElevenLabs API key (optional, best-quality voices).
+ * Configured via /admin -> API & Integrations (encrypted in the DB).
+ * Bootstrap fallback: the ELEVENLABS_API_KEY .env variable is used when no
+ * admin key is saved yet, so a fresh install works out of the box. */
 export async function getElevenLabsKey(): Promise<string | null> {
-  return cached("elevenlabs_api_key", true);
+  const fromDb = await cached("elevenlabs_api_key", true);
+  if (fromDb) return fromDb;
+  const env = process.env.ELEVENLABS_API_KEY?.trim();
+  return env ? env : null;
+}
+
+/** Where the ElevenLabs key comes from — used by the admin status endpoint. */
+export async function getElevenLabsKeySource(): Promise<"db" | "env" | null> {
+  const fromDb = await cached("elevenlabs_api_key", true);
+  if (fromDb) return "db";
+  return process.env.ELEVENLABS_API_KEY?.trim() ? "env" : null;
 }
 
 /* ------------------------------------------------------------------ */

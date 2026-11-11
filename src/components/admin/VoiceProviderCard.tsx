@@ -13,7 +13,7 @@ import { Mic, ShieldCheck, Trash2, Loader2 } from "lucide-react";
 
 type VoiceProvider = "auto" | "elevenlabs" | "google" | "edge";
 type VoiceCfg = {
-  elevenlabs?: { configured: boolean };
+  elevenlabs?: { configured: boolean; source?: string | null };
   gemini: { configured: boolean };
   voiceProvider?: VoiceProvider;
 };
@@ -123,7 +123,14 @@ export function VoiceProviderCard() {
           </p>
         </div>
         <div className="space-y-1.5">
-          <Label className="text-[11px] font-medium text-foreground">ElevenLabs API key {el && <span className="text-emerald-400">(saved)</span>}</Label>
+          <Label className="text-[11px] font-medium text-foreground">
+            ElevenLabs API key{" "}
+            {el && (
+              <span className="text-emerald-400">
+                (saved{cfg?.elevenlabs?.source === "env" ? " via .env — paste here to override" : ""})
+              </span>
+            )}
+          </Label>
           <div className="flex items-end gap-2">
             <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="Paste ElevenLabs API key (sk_…)" autoComplete="off" className="flex-1" />
             <Button size="sm" onClick={() => void save()} disabled={busy || !key.trim()}>

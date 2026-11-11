@@ -35,6 +35,8 @@ Rules:
 - Narration is spoken text only (no stage directions, no camera notes).
 - Each scene narration must be 1-3 sentences.
 - visualPrompt: describes ONE vertical (9:16) image to display during the scene. No text in image. Detailed art direction.
+- CHARACTER CONSISTENCY (critical): invent ONE specific recurring main character for the video (age, gender, ethnicity, hairstyle, hair color, outfit, one distinctive feature) and describe that character with the SAME exact wording at the start of every scene's visualPrompt (e.g. "A 28-year-old Indian woman with long black hair, wearing a mustard kurti and gold earrings, ..."). The character must look identical in every scene so the video feels like one continuous story.
+- motion: cinematic motion for the scene — what the character does + camera move (e.g. "she turns to camera and smiles, slow push-in"). Keep the character the active subject.
 - caption: max 8 words, punchy on-screen text for the scene.
 - Never fabricate statistics, quotes, dates, or events. If a factual claim is uncertain, include it in "warnings".
 Respond ONLY with valid JSON.`;
@@ -125,8 +127,8 @@ function sceneJsonContract(): string {
   "scenes": [
     { "sceneNumber": 1,
       "narration": "string - spoken words for this scene",
-      "visualPrompt": "string - vertical 9:16 image description, art direction, style, lighting; no text overlays in image",
-      "motion": "string - cinematic motion for the scene: subject action + camera move (e.g. 'subject turns to camera and smiles, slow push-in')",
+      "visualPrompt": "string - vertical 9:16 image description: START with the same recurring main character description (identical wording every scene: age, gender, hairstyle, outfit, distinctive feature), then the scene setting, art direction, style, lighting; no text overlays in image",
+      "motion": "string - cinematic motion for the scene: what the SAME main character does + camera move (e.g. 'she turns to camera and smiles, slow push-in')",
       "caption": "string - max 8 words on-screen text" }
   ],
   "cta": "string - closing call to action (1 sentence)",
@@ -219,6 +221,8 @@ Respond with JSON only:
     chunkSpecs.map(async (chunk) => {
       const user = `You are writing PART ${chunk.part + 1} of ${parts} of a long ${opts.duration}-second YouTube video script.
 ${baseContext(opts)}
+
+CHARACTER CONSISTENCY: pick ONE specific recurring main character for the whole video and open every scene's visualPrompt with the exact same character description (age, gender, hairstyle, outfit, distinctive feature) so all parts show the same person.
 
 FULL story outline (for context — do not rewrite other parts):
 ${beats.map((b, i) => `${i + 1}. ${b}`).join("\n")}
