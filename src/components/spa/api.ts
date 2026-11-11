@@ -11,10 +11,11 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const isForm = typeof FormData !== "undefined" && body instanceof FormData;
   const res = await fetch(path, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: body && !isForm ? { "Content-Type": "application/json" } : undefined,
+    body: body ? (isForm ? (body as FormData) : JSON.stringify(body)) : undefined,
     credentials: "include",
   });
   let data: unknown = null;

@@ -12,7 +12,8 @@ const generateSchema = z.object({
   topic: z.string().min(3).max(300).optional(),
   language: z.string().max(60).optional(),
   tone: z.enum(["educational", "storytelling", "commentary", "entertainment"]).optional(),
-  duration: z.number().int().min(15).max(90).optional(),
+  // Long-video support: up to 10 minutes; the scene engine scales accordingly
+  duration: z.number().int().min(15).max(600).optional(),
 });
 
 /**

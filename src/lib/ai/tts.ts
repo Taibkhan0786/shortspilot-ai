@@ -3,13 +3,25 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { saveBuffer } from "@/lib/storage";
-import { getGeminiKey, getElevenLabsKey } from "./config";
+import { getElevenLabsKey } from "./config";
 import { geminiTtsWav, GEMINI_VOICE_MAP } from "./geminiTts";
 import { elevenLabsMp3 } from "./elevenlabs";
 import { detectLang } from "./lang";
+import { getOrderedKeys, withKeyPool } from "./keyPool";
 
-/** Voice catalog mapped to available TTS voices (PRD §6.7). */
+/** Voice catalog mapped to available TTS voices (PRD §6.7).
+ * "g-*" ids are REAL Google voices spoken by Gemini TTS (pooled accounts). */
 export const VOICES = [
+  // — Google Gemini voices (natural, best quality, uses your Gemini accounts) —
+  { id: "g-kore", name: "Google Kore", description: "Firm & confident — Gemini voice", accent: "Google", gender: "Female" },
+  { id: "g-puck", name: "Google Puck", description: "Upbeat & energetic — Gemini voice", accent: "Google", gender: "Male" },
+  { id: "g-charon", name: "Google Charon", description: "Informative & deep — Gemini voice", accent: "Google", gender: "Male" },
+  { id: "g-leda", name: "Google Leda", description: "Youthful & warm — Gemini voice", accent: "Google", gender: "Female" },
+  { id: "g-zephyr", name: "Google Zephyr", description: "Bright & airy — Gemini voice", accent: "Google", gender: "Female" },
+  { id: "g-fenrir", name: "Google Fenrir", description: "Excitable & bold — Gemini voice", accent: "Google", gender: "Male" },
+  { id: "g-aoede", name: "Google Aoede", description: "Breezy & light — Gemini voice", accent: "Google", gender: "Female" },
+  { id: "g-orus", name: "Google Orus", description: "Authoritative & steady — Gemini voice", accent: "Google", gender: "Male" },
+  // — Classic catalog (free, no key needed) —
   { id: "tongtong", name: "Tongtong", description: "Warm & friendly", accent: "Neutral", gender: "Female" },
   { id: "chuichui", name: "Chuichui", description: "Lively & cute", accent: "Neutral", gender: "Female" },
   { id: "xiaochen", name: "Xiaochen", description: "Calm & professional", accent: "Neutral", gender: "Female" },
@@ -23,6 +35,22 @@ export type VoiceId = (typeof VOICES)[number]["id"];
 
 export function isValidVoice(id: string): boolean {
   return VOICES.some((v) => v.id === id);
+}
+
+/** In-app Google voice id → Gemini prebuilt voice name. */
+export const GOOGLE_VOICE_MAP: Record<string, string> = {
+  "g-kore": "Kore",
+  "g-puck": "Puck",
+  "g-charon": "Charon",
+  "g-leda": "Leda",
+  "g-zephyr": "Zephyr",
+  "g-fenrir": "Fenrir",
+  "g-aoede": "Aoede",
+  "g-orus": "Orus",
+};
+
+export function isGoogleVoice(id: string): boolean {
+  return id in GOOGLE_VOICE_MAP;
 }
 
 export function splitTextIntoChunks(text: string, maxLength = 950): string[] {
@@ -189,12 +217,15 @@ async function edgeTtsBuffer(text: string, voice: string, speed: number): Promis
     }
   }
 
-  // 2) Gemini TTS
-  const gKey = await getGeminiKey().catch(() => null);
-  if (gKey) {
+  // 2) Gemini TTS (pooled: every configured Google account is tried)
+  const keys = await getOrderedKeys().catch(() => [] as string[]);
+  if (keys.length > 0) {
     try {
       const gVoice = GEMINI_VOICE_MAP[EDGE_VOICE_MAP[voice] ?? "en-US-AriaNeural"] ?? "Kore";
-      const wav = await geminiTtsWav(text, gVoice, gKey);
+      const { result: wav } = await withKeyPool(
+        (key) => geminiTtsWav(text, gVoice, key),
+        { classify: () => "next" }
+      );
       console.error("[tts] provider: Gemini TTS");
       return tempo !== 1 ? await toWavViaFfmpeg(wav, "wav", tempo) : wav;
     } catch (e) {
@@ -249,7 +280,9 @@ async function edgeTtsBuffer(text: string, voice: string, speed: number): Promis
  * Generate speech audio (wav) for a text segment. Max 1024 chars per request —
  * longer inputs are chunked and concatenated by the caller.
  * Retries with exponential backoff when the TTS provider rate-limits (429).
- * Providers: z-ai SDK -> ElevenLabs -> Gemini TTS -> Edge TTS -> Google Translate TTS.
+ * Providers:
+ *   Google voices (g-*): Gemini TTS (pooled accounts) → Edge → Google Translate.
+ *   Classic voices:      z-ai SDK → ElevenLabs → Gemini TTS (pooled) → Edge → Google Translate.
  */
 export async function ttsBuffer(
   text: string,
@@ -257,6 +290,31 @@ export async function ttsBuffer(
   speed: number = 1.0
 ): Promise<Buffer> {
   const clampedSpeed = Math.min(2.0, Math.max(0.5, speed));
+
+  // ——— Google voice selected: go straight to Gemini TTS with the account pool ———
+  if (isGoogleVoice(voice)) {
+    const geminiName = GOOGLE_VOICE_MAP[voice] ?? "Kore";
+    const keys = await getOrderedKeys().catch(() => [] as string[]);
+    if (keys.length > 0) {
+      try {
+        const { result: wav } = await withKeyPool(
+          (key) => geminiTtsWav(text, geminiName, key),
+          { classify: () => "next" }
+        );
+        console.error(`[tts] provider: Google Gemini TTS voice ${geminiName}`);
+        if (clampedSpeed !== 1) return await toWavViaFfmpeg(wav, "wav", clampedSpeed);
+        return wav;
+      } catch (e) {
+        console.error(
+          `[tts] Google Gemini TTS unavailable (${e instanceof Error ? e.message.slice(0, 140) : e}) — falling back to Edge neural voice`
+        );
+      }
+    } else {
+      console.error("[tts] Google voice selected but no Gemini key configured — using Edge fallback");
+    }
+    return edgeTtsBuffer(text, "tongtong", clampedSpeed);
+  }
+
   const backoffs = [4000, 12000, 30000]; // ~46s max total wait
   let lastErr: unknown;
   for (let attempt = 0; attempt <= backoffs.length; attempt++) {

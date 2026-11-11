@@ -158,7 +158,15 @@ export function Onboarding() {
                     <Select value={form.voiceId} onValueChange={(v) => set("voiceId", v)}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="tongtong">Tongtong — warm & friendly</SelectItem>
+                        <SelectItem value="g-kore">Google Kore — firm &amp; confident</SelectItem>
+                        <SelectItem value="g-puck">Google Puck — upbeat &amp; energetic</SelectItem>
+                        <SelectItem value="g-charon">Google Charon — deep &amp; informative</SelectItem>
+                        <SelectItem value="g-leda">Google Leda — youthful &amp; warm</SelectItem>
+                        <SelectItem value="g-zephyr">Google Zephyr — bright &amp; airy</SelectItem>
+                        <SelectItem value="g-fenrir">Google Fenrir — excitable &amp; bold</SelectItem>
+                        <SelectItem value="g-aoede">Google Aoede — breezy &amp; light</SelectItem>
+                        <SelectItem value="g-orus">Google Orus — authoritative</SelectItem>
+                        <SelectItem value="tongtong">Tongtong — warm &amp; friendly</SelectItem>
                         <SelectItem value="chuichui">Chuichui — lively</SelectItem>
                         <SelectItem value="xiaochen">Xiaochen — professional</SelectItem>
                         <SelectItem value="jam">Jam — British</SelectItem>

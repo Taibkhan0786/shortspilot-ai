@@ -1,24 +1,43 @@
 import { getGeminiKey, getAiSetting } from "./config";
+import { withKeyPool, maskKey } from "./keyPool";
 
 /**
  * Google Veo — image-to-video ("cinematic photo motion") via the Gemini API.
  *
- * When enabled in Admin -> API & Integrations ("Veo cinematic motion"), each
- * scene's still image is animated into a short realistic clip by Veo before
- * rendering (Google Flow-style movement instead of FFmpeg zoom-pan).
+ * Two admin-selectable engines (Admin → API & Integrations → Video engine):
+ *   - "veo3"  : Flow-AI style cinematic quality (Veo 3 first, best realism)
+ *   - "omni"  : Omni Flash fast mode (fastest model first, shorter clips)
+ *
+ * When enabled, each scene's still image is animated into a short realistic
+ * clip by Veo before rendering (Google Flow-style movement instead of the
+ * FFmpeg zoom-pan). All configured Gemini accounts are pooled: when one
+ * account's quota runs out the next key takes over automatically.
  *
  * Requirements: a Gemini API key with billing enabled (Veo is paid-only).
  * Every failure falls back gracefully to the built-in cinematic zoom-pan.
  */
 
-const VEO_MODELS = [
-  "veo-3.0-fast-generate-preview", // fastest, preferred
-  "veo-3.0-generate-preview",
-  "veo-2.0-generate-001", // older fallback (5–8s, 9:16)
-];
+export type VeoEngine = "veo3" | "omni";
+
+const VEO_MODEL_CHAINS: Record<VeoEngine, string[]> = {
+  veo3: [
+    "veo-3.0-generate-preview", // Flow-AI quality
+    "veo-3.0-fast-generate-preview", // same family, quicker
+    "veo-2.0-generate-001", // older fallback (5–8s, 9:16)
+  ],
+  omni: [
+    "veo-3.0-fast-generate-preview", // Omni Flash — speed first
+    "veo-2.0-generate-001",
+  ],
+};
 
 export async function isVeoEnabled(): Promise<boolean> {
   return (await getAiSetting("veo_enabled").catch(() => null)) === "true";
+}
+
+export async function getVeoEngine(): Promise<VeoEngine> {
+  const v = (await getAiSetting("veo_engine").catch(() => null))?.trim();
+  return v === "omni" ? "omni" : "veo3";
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -27,28 +46,94 @@ export type VeoClipOptions = {
   /** JPEG/PNG bytes of the source scene image */
   image: Buffer;
   mimeType: string;
-  /** Motion description for the scene (the visualPrompt + motion direction) */
+  /** Motion description for the scene (the motionPrompt + narration) */
   prompt: string;
   /** Desired clip length in seconds (Veo supports 4–8; clamped) */
   seconds?: number;
-  /** Polling budget in ms (default 4 minutes) */
+  /** Polling budget in ms (default 4 min; Omni Flash defaults to 3 min) */
   maxWaitMs?: number;
+  /** Explicit API key — when omitted the whole Gemini account pool is used */
+  apiKey?: string;
+  engine?: VeoEngine;
   log?: (msg: string) => void;
 };
 
-export type VeoClipResult = { video: Buffer; model: string };
+export type VeoClipResult = { video: Buffer; model: string; key: string };
+
+/**
+ * Flow-AI style motion directive — appended to every Veo motion prompt so the
+ * result moves like a real cinematic shot instead of a static zoom:
+ * realistic human movement, parallax, filmic camera work.
+ */
+export function cinematicMotionDirective(engine: VeoEngine = "veo3"): string {
+  return [
+    "Animate this still image as an ultra-realistic cinematic video shot.",
+    "Real human subjects move naturally: subtle breathing, micro facial expressions, natural hand gestures, eyes blink; hair and clothing react to ambient wind.",
+    "Subject and background move with gentle parallax depth; the environment stays alive (soft light shifts, floating particles, ambient motion).",
+    engine === "omni"
+      ? "Camera: one smooth, subtle move (slow push-in or gentle drift). Keep it stable and fast to render."
+      : "Camera: slow cinematic push-in with soft drift, shallow depth of field, filmic motion blur, 35mm anamorphic look.",
+    "Photoreal skin texture and consistent lighting throughout; no morphing, no distortion, no flicker.",
+    "No text, no captions, no watermark, no glitch effects.",
+  ].join(" ");
+}
+
+/** Build the full motion prompt for a scene (used by the render job). */
+export function buildMotionPrompt(opts: { caption?: string | null; narration?: string | null; extra?: string | null; engine?: VeoEngine }): string {
+  const { caption, narration, extra, engine } = opts;
+  return [
+    caption ? `Scene about: ${caption}` : "",
+    narration ? `Narration context: ${narration.slice(0, 300)}` : "",
+    extra ? extra.slice(0, 400) : "",
+    cinematicMotionDirective(engine),
+  ].filter(Boolean).join(". ");
+}
+
+function isFatalKeyError(status: number, text: string): boolean {
+  const t = text.toLowerCase();
+  // invalid/missing key, permission denied, bad request body — another account may still work,
+  // but a truly malformed key repeats on every account only if ALL are broken; treat auth errors as per-key fatal
+  return status === 401 || status === 403 || (status === 400 && (t.includes("api key") || t.includes("api_key")));
+}
 
 /** Generate one short image-to-video clip. Throws on failure (caller falls back). */
 export async function generateVeoClip(opts: VeoClipOptions): Promise<VeoClipResult> {
-  const { image, mimeType, prompt, seconds = 8, maxWaitMs = 4 * 60_000, log = (m) => console.error(m) } = opts;
-  const apiKey = (await getGeminiKey().catch(() => null))?.trim().replace(/^["']|["']$/g, "");
-  if (!apiKey) throw new Error("Veo requires a Gemini API key (Admin → API & Integrations)");
-
-  const durationSeconds = Math.min(8, Math.max(4, Math.round(seconds)));
+  const { image, mimeType, prompt, seconds, maxWaitMs, apiKey, engine: engineOpt, log = (m) => console.error(m) } = opts;
+  const engine = engineOpt ?? (await getVeoEngine());
+  const durationSeconds = Math.min(8, Math.max(4, Math.round(seconds ?? (engine === "omni" ? 6 : 8))));
+  const waitMs = maxWaitMs ?? (engine === "omni" ? 3 * 60_000 : 4 * 60_000);
   const base64 = image.toString("base64");
 
+  const runWithKey = (apiKey: string): Promise<{ video: Buffer; model: string }> =>
+    generateVeoClipWithKey({ apiKey, base64, mimeType, prompt, durationSeconds, maxWaitMs: waitMs, engine, log });
+
+  if (apiKey) {
+    const { video, model } = await runWithKey(apiKey.trim().replace(/^["']|["']$/g, ""));
+    return { video, model, key: maskKey(apiKey) };
+  }
+
+  const { result, key } = await withKeyPool(runWithKey, {
+    classify: () => "next", // any per-key failure → try the next account
+    log,
+  });
+  return { ...result, key: maskKey(key) };
+}
+
+async function generateVeoClipWithKey(args: {
+  apiKey: string;
+  base64: string;
+  mimeType: string;
+  prompt: string;
+  durationSeconds: number;
+  maxWaitMs: number;
+  engine: VeoEngine;
+  log: (msg: string) => void;
+}): Promise<{ video: Buffer; model: string }> {
+  const { apiKey, base64, mimeType, prompt, durationSeconds, maxWaitMs, engine, log } = args;
+  const models = VEO_MODEL_CHAINS[engine];
   let lastError: Error | null = null;
-  for (const model of VEO_MODELS) {
+
+  for (const model of models) {
     try {
       // 1) queue the long-running generation
       const startRes = await fetch(
@@ -72,7 +157,8 @@ export async function generateVeoClip(opts: VeoClipOptions): Promise<VeoClipResu
         const errText = (await startRes.text().catch(() => "")).slice(0, 300);
         lastError = new Error(`Veo ${model} rejected: ${errText}`);
         log(`[veo] ${model} → ${startRes.status}: ${errText}`);
-        continue;
+        if (isFatalKeyError(startRes.status, errText)) throw lastError; // this account is broken → next account
+        continue; // model unavailable on this key → next model
       }
       const op = (await startRes.json()) as { name?: string };
       if (!op.name) {
@@ -135,6 +221,7 @@ export async function generateVeoClip(opts: VeoClipOptions): Promise<VeoClipResu
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
       log(`[veo] ${model}: ${lastError.message} → next model`);
+      if (isFatalKeyError(400, lastError.message) && /api key/i.test(lastError.message)) throw lastError;
     }
   }
   throw lastError ?? new Error("Veo generation failed for all models");

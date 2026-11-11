@@ -1,5 +1,6 @@
 import ZAI from "z-ai-web-dev-sdk";
-import { getGeminiKey, getAiSetting, getGeminiTunables } from "./config";
+import { getAiSetting, getGeminiTunables } from "./config";
+import { getOrderedKeys, withKeyPool } from "./keyPool";
 import { HttpError } from "@/lib/auth";
 import { geminiGenerate, geminiStreamText, GeminiError, DEFAULT_GEMINI_MODELS } from "./gemini";
 
@@ -75,7 +76,7 @@ export async function geminiModelChain(): Promise<string[]> {
   return chain;
 }
 
-async function geminiChat(messages: LlmMessage[], apiKey: string, temperature?: number): Promise<string> {
+async function geminiChat(messages: LlmMessage[], apiKey: string, temperature?: number, minTokens?: number): Promise<string> {
   const tunables = await getGeminiTunables();
   const system = messages.filter((m) => m.role === "assistant").map((m) => m.content).join("\n\n");
   const userText = messages.filter((m) => m.role === "user").map((m) => m.content).join("\n\n");
@@ -83,7 +84,7 @@ async function geminiChat(messages: LlmMessage[], apiKey: string, temperature?: 
     contents: [{ role: "user", parts: [{ text: userText || system || "Hello" }] }],
     generationConfig: {
       temperature: temperature ?? tunables.temperature,
-      maxOutputTokens: tunables.maxTokens,
+      maxOutputTokens: Math.max(tunables.maxTokens, minTokens ?? 0),
     },
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
@@ -100,10 +101,24 @@ async function geminiChat(messages: LlmMessage[], apiKey: string, temperature?: 
   return text;
 }
 
+/**
+ * Gemini with the FULL account pool: every configured key is tried in
+ * rotation until one answers, so quotas from multiple Google accounts add up.
+ */
+async function geminiChatPooled(messages: LlmMessage[], temperature?: number, minTokens?: number): Promise<string> {
+  const keys = await getOrderedKeys();
+  if (keys.length === 0) throw new Error("no gemini key");
+  const { result } = await withKeyPool(
+    (key) => geminiChat(messages, key, temperature, minTokens),
+    { classify: () => "next" } // any per-account failure → next account
+  );
+  return result;
+}
+
 /** Plain chat completion with retry (PRD §12) — SPEED-TUNED retry budget. */
 export async function chat(
   messages: LlmMessage[],
-  opts: { retries?: number; temperature?: number } = {}
+  opts: { retries?: number; temperature?: number; minTokens?: number } = {}
 ): Promise<string> {
   const { retries = 2 } = opts;
   let lastError: Error | null = null;
@@ -126,12 +141,19 @@ export async function chat(
         }
       }
     }
-    // Provider 2: Google Gemini (free tier key)
-    const geminiKey = await getGeminiKey().catch(() => null);
-    if (geminiKey) {
-      try {
-        return await geminiChat(messages, geminiKey, opts.temperature);
-      } catch (e) {
+    // Provider 2: Google Gemini (all pooled accounts)
+    try {
+      return await geminiChatPooled(messages, opts.temperature, opts.minTokens);
+    } catch (e) {
+      const noKey = e instanceof Error && /no gemini key/i.test(e.message);
+      if (noKey) {
+        if (zaiBroken) {
+          throw new HttpError(
+            502,
+            "No LLM provider configured. Ask an Admin to save a free Gemini key (aistudio.google.com/apikey) in Admin → API & Integrations."
+          );
+        }
+      } else {
         lastError = e instanceof Error ? e : new Error(String(e));
         rateLimited = isRateLimitError(lastError);
         console.error(`[llm] gemini attempt ${attempt} failed: ${lastError.message}`);
@@ -140,11 +162,6 @@ export async function chat(
           throw new HttpError(502, `Gemini rejected the request (${e.status}). ${e.message.slice(0, 200)}`);
         }
       }
-    } else if (zaiBroken) {
-      throw new HttpError(
-        502,
-        "No LLM provider configured. Ask an Admin to save a free Gemini key (aistudio.google.com/apikey) in Admin → API & Integrations."
-      );
     }
     // Short, provider-shaped waits only — 429s move on to the next model fast.
     if (attempt < retries) {
@@ -200,13 +217,13 @@ export function extractJson<T>(text: string): T {
 /** Chat completion that must return JSON, with retry. */
 export async function chatJson<T>(
   messages: LlmMessage[],
-  opts: { retries?: number; temperature?: number } = {}
+  opts: { retries?: number; temperature?: number; minTokens?: number } = {}
 ): Promise<T> {
   const { retries = 2 } = opts;
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const text = await chat(messages, { retries: 1, temperature: opts.temperature });
+      const text = await chat(messages, { retries: 1, temperature: opts.temperature, minTokens: opts.minTokens });
       return extractJson<T>(text);
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));

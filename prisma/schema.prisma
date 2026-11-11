@@ -391,6 +391,8 @@ model VideoScene {
   assetUrl    String?
   audioUrl    String?
   caption     String?
+  // Flow-AI style motion direction for this scene (Veo image-to-video prompt)
+  motionPrompt String?
   startTime   Float   @default(0)
   endTime     Float   @default(0)
 

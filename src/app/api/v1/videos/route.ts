@@ -26,7 +26,7 @@ export const POST = handler(async (req: NextRequest) => {
 
   await assertCanCreateVideo(user.id); // plan shorts/month limit
 
-  const scriptScenes = safeJsonParse<{ sceneNumber: number; narration: string; caption: string }[]>(script.scenes, []);
+  const scriptScenes = safeJsonParse<{ sceneNumber: number; narration: string; caption: string; motion?: string }[]>(script.scenes, []);
   if (scriptScenes.length === 0) throw new HttpError(400, "Script has no scenes");
 
   // latest voiceover + assets for this script
@@ -103,6 +103,7 @@ export const POST = handler(async (req: NextRequest) => {
         assetUrl: assetByScene.get(s.sceneNumber) ?? "",
         audioUrl: a?.url ?? "",
         caption: s.caption,
+        motionPrompt: (s as { motion?: string }).motion || null,
         startTime: start,
         endTime: end,
       },

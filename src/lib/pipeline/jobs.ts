@@ -5,8 +5,7 @@ import { renderShort } from "@/lib/pipeline/render";
 import { uploadPath, urlToAbs } from "@/lib/storage";
 import { notify } from "@/lib/notify";
 import { releaseCredits } from "@/lib/usage";
-import { isVeoEnabled, generateVeoClip } from "@/lib/ai/veo";
-import { getGeminiKey } from "@/lib/ai/config";
+import { isVeoEnabled, getVeoEngine, buildMotionPrompt, generateVeoClip } from "@/lib/ai/veo";
 
 /** Process a queued RenderJob: scenes → MP4 → quality checks → approval state. */
 export async function processRenderJob(jobId: string) {
@@ -48,41 +47,41 @@ export async function processRenderJob(jobId: string) {
     }))?.plan ?? { watermark: true };
 
     // ---- Optional Veo cinematic motion (Admin → API & Integrations toggle) ----
-    // Generates a short realistic AI video from each scene still (Flow-style).
+    // Generates short realistic AI videos from each scene still (Flow-style).
+    // Engine modes: "veo3" (Flow-AI cinematic quality) or "omni" (Omni Flash fast).
+    // All Gemini accounts in the admin key pool are used with auto-rotation.
     // Any per-scene failure falls back to the built-in cinematic zoom-pan.
     const motionClips: (string | null)[] = usable.map(() => null);
     const veoWarnings: string[] = [];
     if (await isVeoEnabled()) {
-      const geminiKey = await getGeminiKey().catch(() => null);
-      if (!geminiKey) {
-        veoWarnings.push("Veo motion skipped — no Gemini key configured.");
-      } else {
-        const veoDir = uploadPath("tmp", `veo_${job.id}`);
-        await fs.mkdir(veoDir, { recursive: true });
-        try {
-          for (let i = 0; i < usable.length; i++) {
+      const engine = await getVeoEngine();
+      const engineLabel = engine === "omni" ? "Omni Flash (fast)" : "Veo 3 (Flow-AI cinematic)";
+      const veoDir = uploadPath("tmp", `veo_${job.id}`);
+      await fs.mkdir(veoDir, { recursive: true });
+      try {
+        // LONG-VIDEO FAST PATH: animate scenes with bounded concurrency (2)
+        // so a 40-scene video does not serialize into hours of polling.
+        const CONCURRENCY = 2;
+        let cursor = 0;
+        let completed = 0;
+        const workers = Array.from({ length: Math.min(CONCURRENCY, usable.length) }, async () => {
+          while (cursor < usable.length) {
+            const i = cursor++;
             const s = usable[i];
-            await db.renderJob.update({
-              where: { id: job.id },
-              data: { progress: 5 + Math.round((i / usable.length) * 28), stage: `Veo motion — scene ${i + 1}/${usable.length}` },
-            });
-            await db.video.update({
-              where: { id: video.id },
-              data: { progress: 5 + Math.round((i / usable.length) * 28), statusMessage: `Veo motion — scene ${i + 1}/${usable.length}` },
-            });
             try {
               const image = await fs.readFile(urlToAbs(s.assetUrl!));
               const mime = image[0] === 0xff && image[1] === 0xd8 ? "image/jpeg" : "image/png";
-              const motionPrompt = [
-                s.caption ? `Scene about: ${s.caption}` : "",
-                `Narration: ${s.narration}`,
-                "Animate this still image with smooth, realistic cinematic motion: gentle camera push-in, subtle parallax between subject and background, natural ambient movement. Stable, professional footage. No text, no captions.",
-              ].filter(Boolean).join(". ");
+              const motionPrompt = buildMotionPrompt({
+                caption: s.caption,
+                narration: s.narration,
+                extra: s.motionPrompt,
+                engine,
+              });
               const { video: clip } = await generateVeoClip({
                 image,
                 mimeType: mime,
                 prompt: motionPrompt,
-                seconds: 8,
+                seconds: engine === "omni" ? 6 : 8,
               });
               const clipPath = path.join(veoDir, `veo_${i}.mp4`);
               await fs.writeFile(clipPath, clip);
@@ -92,16 +91,22 @@ export async function processRenderJob(jobId: string) {
               console.error(`[render] veo scene ${i + 1} failed: ${msg}`);
               veoWarnings.push(`Scene ${i + 1} Veo motion unavailable (${msg.slice(0, 60)}) — cinematic zoom used.`);
             }
+            completed++;
+            const stage = `${engineLabel} motion — ${completed}/${usable.length}`;
+            const pct = 5 + Math.round((completed / usable.length) * 28);
+            await db.renderJob.update({ where: { id: job.id }, data: { progress: pct, stage } }).catch(() => {});
+            await db.video.update({ where: { id: video.id }, data: { progress: pct, statusMessage: stage } }).catch(() => {});
           }
-        } finally {
-          fs.rm(veoDir, { recursive: true, force: true }).catch(() => {});
-        }
-        if (motionClips.some(Boolean)) {
-          await db.video.update({
-            where: { id: video.id },
-            data: { statusMessage: "Veo motion ready — rendering cinematic video" },
-          });
-        }
+        });
+        await Promise.all(workers);
+      } finally {
+        fs.rm(veoDir, { recursive: true, force: true }).catch(() => {});
+      }
+      if (motionClips.some(Boolean)) {
+        await db.video.update({
+          where: { id: video.id },
+          data: { statusMessage: `${engineLabel} motion ready — rendering cinematic video` },
+        });
       }
     }
 

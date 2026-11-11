@@ -14,6 +14,8 @@ export type SceneSpec = {
   sceneNumber: number;
   narration: string;
   visualPrompt: string;
+  /** optional Flow-AI style motion direction (subject action + camera move) */
+  motion?: string;
   caption: string;
 };
 
@@ -89,7 +91,7 @@ ${ideaSpec}`;
     topic: String(i.topic || "").slice(0, 300),
     hook: String(i.hook || "").slice(0, 500),
     angle: String(i.angle || "").slice(0, 500),
-    duration: Math.min(90, Math.max(15, Number(i.duration) || 45)),
+    duration: Math.min(300, Math.max(15, Number(i.duration) || 45)),
     score: Math.min(100, Math.max(0, Number(i.score) || 70)),
   })).filter((i) => i.topic);
 
@@ -97,7 +99,7 @@ ${ideaSpec}`;
   return { ideas, sources };
 }
 
-/** Generate a structured scene-level script (PRD §6.6). */
+/** Generate a structured scene-level script (PRD §6.6). LONG-VIDEO READY. */
 export async function generateScript(opts: {
   topic: string;
   language: string;
@@ -108,28 +110,62 @@ export async function generateScript(opts: {
   researchNotes?: string;
 }): Promise<ScriptSpec> {
   const { topic, language, tone, duration, audience, niche, researchNotes } = opts;
-  const sceneCount = Math.max(3, Math.min(8, Math.round(duration / 9)));
+  // ~8s per scene, scaled for long videos (5 min ≈ 37 scenes)
+  const sceneCount = Math.max(3, Math.min(40, Math.round(duration / 8)));
 
-  const user = `Write a ${duration}-second YouTube Shorts script.
-Topic: ${topic}
-${niche ? `Niche: ${niche}` : ""}
-Language: ${language} (write ALL narration and captions in this language)
-Tone/format: ${tone}
-Audience: ${audience || "general audience"}
-Target: exactly ${sceneCount} scenes${researchNotes ? `\n\nVerified research notes (do not contradict; do not add unverified facts):\n${researchNotes}` : ""}
+  if (sceneCount <= 14) {
+    return generateScriptSingle({ topic, language, tone, duration, audience, niche, researchNotes, sceneCount });
+  }
+  return generateScriptChunked({ topic, language, tone, duration, audience, niche, researchNotes, sceneCount });
+}
 
-Respond with JSON only:
-{
-  "hook": "string - 1-2 sentence opening hook",
+/** Scene JSON contract shared by both generators. */
+function sceneJsonContract(): string {
+  return `{  "hook": "string - 1-2 sentence opening hook",
   "scenes": [
     { "sceneNumber": 1,
       "narration": "string - spoken words for this scene",
       "visualPrompt": "string - vertical 9:16 image description, art direction, style, lighting; no text overlays in image",
+      "motion": "string - cinematic motion for the scene: subject action + camera move (e.g. 'subject turns to camera and smiles, slow push-in')",
       "caption": "string - max 8 words on-screen text" }
   ],
   "cta": "string - closing call to action (1 sentence)",
   "warnings": ["string - factual uncertainty or sensitivity flags, empty array if none"]
 }`;
+}
+
+function baseContext(opts: { topic: string; language: string; tone: string; audience?: string; niche?: string; researchNotes?: string }): string {
+  return `Topic: ${opts.topic}
+${opts.niche ? `Niche: ${opts.niche}` : ""}
+Language: ${opts.language} (write ALL narration and captions in this language)
+Tone/format: ${opts.tone}
+Audience: ${opts.audience || "general audience"}${opts.researchNotes ? `\n\nVerified research notes (do not contradict; do not add unverified facts):\n${opts.researchNotes}` : ""}`;
+}
+
+function normalizeScenes(raw: unknown, offset = 0): SceneSpec[] {
+  const list = (Array.isArray(raw) ? raw : (raw as { scenes?: unknown[] })?.scenes ?? []) as Record<string, unknown>[];
+  return list
+    .map((s, i) => ({
+      sceneNumber: offset + i + 1,
+      narration: String(s?.narration || "").trim(),
+      visualPrompt: String(s?.visualPrompt || "").trim(),
+      motion: String(s?.motion || "").trim().slice(0, 300),
+      caption: String(s?.caption || "").trim().slice(0, 60),
+    }))
+    .filter((s) => s.narration);
+}
+
+/** Standard path: one call for scripts up to ~14 scenes. */
+async function generateScriptSingle(opts: {
+  topic: string; language: string; tone: string; duration: number;
+  audience?: string; niche?: string; researchNotes?: string; sceneCount: number;
+}): Promise<ScriptSpec> {
+  const user = `Write a ${opts.duration}-second YouTube Shorts script.
+${baseContext(opts)}
+Target: exactly ${opts.sceneCount} scenes
+
+Respond with JSON only:
+${sceneJsonContract()}`;
 
   const tunables = await getGeminiTunables();
   const result = await chatJson<ScriptSpec>(
@@ -137,22 +173,89 @@ Respond with JSON only:
       { role: "assistant", content: SCRIPT_SYSTEM },
       { role: "user", content: user },
     ],
-    { retries: 2, temperature: tunables.temperature }
+    { retries: 2, temperature: tunables.temperature, minTokens: Math.min(16384, opts.sceneCount * 180 + 400) }
   );
 
-  const scenes = (result.scenes || [])
-    .map((s, i) => ({
-      sceneNumber: i + 1,
-      narration: String(s.narration || "").trim(),
-      visualPrompt: String(s.visualPrompt || "").trim(),
-      caption: String(s.caption || "").trim().slice(0, 60),
-    }))
-    .filter((s) => s.narration);
-
+  const scenes = normalizeScenes(result.scenes);
   if (scenes.length === 0) throw new Error("Script generation returned no scenes");
 
   const warnings = Array.isArray(result.warnings) ? result.warnings.map(String).slice(0, 5) : [];
-  return { hook: String(result.hook || topic).slice(0, 300), scenes, cta: String(result.cta || "").slice(0, 300), warnings };
+  return { hook: String(result.hook || opts.topic).slice(0, 300), scenes, cta: String(result.cta || "").slice(0, 300), warnings };
+}
+
+/** Long-video path: outline first, then parallel chunk expansion (fast + coherent). */
+async function generateScriptChunked(opts: {
+  topic: string; language: string; tone: string; duration: number;
+  audience?: string; niche?: string; researchNotes?: string; sceneCount: number;
+}): Promise<ScriptSpec> {
+  const CHUNK = 12;
+  const parts = Math.ceil(opts.sceneCount / CHUNK);
+
+  // Phase 1: one narrative outline so all chunks tell one coherent story
+  const outlineUser = `Plan a ${opts.duration}-second (${Math.round(opts.duration / 60)} minute) YouTube video script.
+${baseContext(opts)}
+Produce an outline of exactly ${opts.sceneCount} short beats (1-2 sentences each) that together tell a complete, well-paced story with a strong hook at beat 1 and a payoff at the end.
+
+Respond with JSON only:
+{ "beats": ["beat 1", "beat 2", ...] }`;
+
+  const outline = await chatJson<{ beats: string[] }>(
+    [
+      { role: "assistant", content: SCRIPT_SYSTEM },
+      { role: "user", content: outlineUser },
+    ],
+    { retries: 2, temperature: 0.7, minTokens: Math.min(8192, opts.sceneCount * 60 + 400) }
+  );
+  const beats = (outline.beats || []).map(String).filter(Boolean);
+  if (beats.length === 0) throw new Error("Outline generation failed");
+
+  // Phase 2: expand chunks in PARALLEL (each chunk knows the full outline for context)
+  const chunkSpecs = Array.from({ length: parts }, (_, p) => ({
+    part: p,
+    beats: beats.slice(p * CHUNK, (p + 1) * CHUNK),
+  })).filter((c) => c.beats.length > 0);
+
+  const chunkResults = await Promise.all(
+    chunkSpecs.map(async (chunk) => {
+      const user = `You are writing PART ${chunk.part + 1} of ${parts} of a long ${opts.duration}-second YouTube video script.
+${baseContext(opts)}
+
+FULL story outline (for context — do not rewrite other parts):
+${beats.map((b, i) => `${i + 1}. ${b}`).join("\n")}
+
+Your part covers beats ${chunk.part * CHUNK + 1}-${chunk.part * CHUNK + chunk.beats.length}. Expand ONLY those beats into fully-written scenes (narration 1-3 spoken sentences per scene, visualPrompt, motion, caption).
+
+Respond with JSON only:
+{ "scenes": [ { "narration": "...", "visualPrompt": "...", "motion": "...", "caption": "..." } ] }`;
+      try {
+        const tunables = await getGeminiTunables();
+        const r = await chatJson<{ scenes: unknown }>(
+          [
+            { role: "assistant", content: SCRIPT_SYSTEM },
+            { role: "user", content: user },
+          ],
+          { retries: 2, temperature: tunables.temperature, minTokens: Math.min(8192, chunk.beats.length * 200 + 400) }
+        );
+        return normalizeScenes(r.scenes, chunk.part * CHUNK);
+      } catch (e) {
+        console.error(`[script] chunk ${chunk.part + 1}/${parts} failed: ${e instanceof Error ? e.message : e}`);
+        return [] as SceneSpec[];
+      }
+    })
+  );
+
+  const scenes = chunkResults.flat().map((s, i) => ({ ...s, sceneNumber: i + 1 }));
+  if (scenes.length === 0) throw new Error("Long script generation failed — all chunks errored");
+
+  const missing = opts.sceneCount - scenes.length;
+  const warnings: string[] = [];
+  if (missing > 0) warnings.push(`${missing} outline beat(s) could not be expanded — script has ${scenes.length} scenes.`);
+  return {
+    hook: String(scenes[0]?.narration || opts.topic).slice(0, 300),
+    scenes,
+    cta: String(scenes[scenes.length - 1]?.narration || "").slice(0, 300),
+    warnings,
+  };
 }
 
 /** Quality validation for scripts (PRD §12 validate_script). */

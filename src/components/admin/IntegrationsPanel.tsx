@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
@@ -16,7 +17,8 @@ import { Spinner } from "./common";
 import { VoiceProviderCard } from "./VoiceProviderCard";
 import { api, toastError, ApiError } from "@/components/spa/api";
 import { toast } from "sonner";
-import { Copy, KeyRound, Loader2, Save, Trash2, ShieldCheck, Bot, Wallet, SlidersHorizontal, Clapperboard } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Copy, KeyRound, Loader2, Save, Trash2, ShieldCheck, Bot, Wallet, SlidersHorizontal, Clapperboard, Users } from "lucide-react";
 
 type Config = {
   oauth: { configured: boolean; source: string | null };
@@ -35,10 +37,10 @@ type Tunables = {
 
 type AiConfig = {
   zai?: { builtIn: boolean; available: boolean };
-  gemini: { configured: boolean; source: string | null; model?: string };
+  gemini: { configured: boolean; source: string | null; model?: string; poolSize?: number; poolKeys?: string[] };
   selfHosted?: boolean;
   tunables?: Tunables;
-  veo?: { enabled: boolean };
+  veo?: { enabled: boolean; engine?: "veo3" | "omni" };
   help: { geminiKeyUrl: string };
 };
 
@@ -56,8 +58,10 @@ export function IntegrationsPanel() {
   const [apiKey, setApiKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [geminiModel, setGeminiModel] = useState("");
+  const [poolText, setPoolText] = useState("");
   const [tunables, setTunables] = useState<Tunables | null>(null);
   const [veoEnabled, setVeoEnabled] = useState(false);
+  const [veoEngine, setVeoEngine] = useState<"veo3" | "omni">("veo3");
   const [busy, setBusy] = useState(false);
   const [clearTarget, setClearTarget] = useState<"google" | "apiKey" | null>(null);
 
@@ -67,7 +71,10 @@ export function IntegrationsPanel() {
       setAiConfig(c);
       setGeminiModel(c.gemini.model && c.gemini.model !== "auto" ? c.gemini.model : "");
       if (c.tunables) setTunables(c.tunables);
-      if (c.veo) setVeoEnabled(c.veo.enabled);
+      if (c.veo) {
+        setVeoEnabled(c.veo.enabled);
+        if (c.veo.engine) setVeoEngine(c.veo.engine);
+      }
     }).catch(() => {});
   }, []);
 
@@ -200,7 +207,7 @@ export function IntegrationsPanel() {
     }
   }
 
-  async function saveTunables(next?: Tunables, veo?: boolean) {
+  async function saveTunables(next?: Tunables, veo?: boolean, engine?: "veo3" | "omni") {
     const t = next ?? tunables;
     if (!t) return;
     setBusy(true);
@@ -211,10 +218,45 @@ export function IntegrationsPanel() {
         geminiMaxTokens: t.maxTokens,
         geminiTimeout: Math.round(t.timeoutMs / 1000),
         ...(veo !== undefined ? { veoEnabled: veo } : {}),
+        ...(engine !== undefined ? { veoEngine: engine } : {}),
       });
       if (res.tunables) setTunables(res.tunables);
-      if (res.veo) setVeoEnabled(res.veo.enabled);
-      toast.success(veo !== undefined ? "Veo mode updated" : "Gemini generation settings saved — live immediately");
+      if (res.veo) {
+        setVeoEnabled(res.veo.enabled);
+        if (res.veo.engine) setVeoEngine(res.veo.engine);
+      }
+      toast.success(veo !== undefined || engine !== undefined ? "Video engine updated" : "Gemini generation settings saved — live immediately");
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveKeyPool() {
+    setBusy(true);
+    try {
+      const res = await api.post<AiConfig>("/api/v1/admin/ai/config", { geminiKeyPool: poolText });
+      setAiConfig((prev) => (prev ? { ...prev, gemini: { ...prev.gemini, poolSize: res.gemini.poolSize, poolKeys: res.gemini.poolKeys, configured: true } } : prev));
+      setPoolText("");
+      toast.success(
+        res.gemini.poolSize && res.gemini.poolSize > 0
+          ? `Account pool saved — ${res.gemini.poolSize} key(s) will rotate automatically`
+          : "Account pool cleared"
+      );
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearKeyPool() {
+    setBusy(true);
+    try {
+      const res = await api.del<{ gemini: { poolSize: number; poolKeys: string[] } }>("/api/v1/admin/ai/config?key=pool");
+      setAiConfig((prev) => (prev ? { ...prev, gemini: { ...prev.gemini, poolSize: res.gemini.poolSize, poolKeys: res.gemini.poolKeys } } : prev));
+      toast.success("Account pool cleared");
     } catch (e) {
       toastError(e);
     } finally {
@@ -463,12 +505,12 @@ export function IntegrationsPanel() {
                 <Slider
                   value={[tunables.maxTokens]}
                   min={256}
-                  max={8192}
+                  max={16384}
                   step={256}
                   onValueChange={([v]) => setTunables((t) => (t ? { ...t, maxTokens: v } : t))}
                   aria-label="Maximum output tokens"
                 />
-                <p className="text-[11px] text-muted-foreground">Higher = longer scripts possible but slower. Default 4096.</p>
+                <p className="text-[11px] text-muted-foreground">Higher = longer scripts possible but slower. Default 4096. Long-video mode auto-raises this per request.</p>
               </div>
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
@@ -492,7 +534,7 @@ export function IntegrationsPanel() {
                 <div>
                   <p className="text-sm font-medium">Veo cinematic motion <span className="ml-1 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-violet-400">beta</span></p>
                   <p className="text-xs text-muted-foreground">
-                    Render photo-motion with Google Veo (real AI video from each scene image — Flow-style realistic movement). Needs a <span className="font-medium text-foreground">billing-enabled Gemini key</span>; slower per scene (auto-falls back to cinematic zoom-pan if unavailable).
+                    Render photo-motion with Google Veo (real AI video from each scene image — Flow-style realistic human movement). Needs a <span className="font-medium text-foreground">billing-enabled Gemini key</span>; every pooled account is used automatically (auto-falls back to cinematic zoom-pan if unavailable).
                   </p>
                 </div>
               </div>
@@ -505,9 +547,81 @@ export function IntegrationsPanel() {
                 aria-label="Toggle Veo cinematic motion"
               />
             </div>
+            {veoEnabled && (
+              <div className="space-y-2.5 rounded-lg border border-border/60 bg-accent/20 p-3">
+                <Label className="text-xs font-medium">Video engine mode</Label>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {[
+                    { id: "veo3" as const, title: "Veo 3 — Flow AI cinematic", desc: "Best realism: natural human motion, filmic camera. Slower per scene." },
+                    { id: "omni" as const, title: "Omni Flash — fast mode", desc: "Fastest render pipeline: shorter clips, quicker polling. Great for bulk." },
+                  ].map((m) => (
+                    <button
+                      key={m.id} type="button"
+                      onClick={() => {
+                        setVeoEngine(m.id);
+                        void saveTunables(undefined, undefined, m.id);
+                      }}
+                      className={cn(
+                        "rounded-lg border p-2.5 text-left transition-colors",
+                        veoEngine === m.id ? "border-primary bg-primary/10" : "border-border/60 hover:border-primary/40"
+                      )}
+                    >
+                      <p className="text-xs font-semibold">{m.title}</p>
+                      <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{m.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
+
+      {/* Gemini MULTI-ACCOUNT POOL — combine quotas from many Google accounts */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center justify-between text-base">
+            <span className="flex items-center gap-2"><Users className="h-4 w-4 text-emerald-400" /> Gemini account pool — multi-account credits</span>
+            <Badge variant="outline" className={cn(
+              (aiConfig?.gemini.poolSize ?? 0) > 0
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                : "border-amber-500/40 bg-amber-500/10 text-amber-400"
+            )}>
+              {(aiConfig?.gemini.poolSize ?? 0) > 0 ? `${aiConfig?.gemini.poolSize} account(s) pooled` : "pool empty"}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Paste <span className="font-medium text-foreground">one API key per line</span> (e.g. 10 accounts x 50 credits = 500 pooled credits). Every AI call — scripts, Google voices, Veo video — rotates through the pool automatically: a key that runs out of quota is skipped for 10 minutes and the next account takes over. Keys are AES-256-GCM encrypted at rest.
+          </p>
+          {(aiConfig?.gemini.poolKeys?.length ?? 0) > 0 && (
+            <div className="max-h-28 space-y-1 overflow-y-auto rounded-lg border border-border/60 bg-accent/30 p-2">
+              {aiConfig?.gemini.poolKeys?.map((k) => (
+                <code key={k} className="block font-mono text-[11px] text-muted-foreground">{k}</code>
+              ))}
+            </div>
+          )}
+          <Textarea
+            value={poolText}
+            onChange={(e) => setPoolText(e.target.value)}
+            placeholder={"AIzaSy…\nAIzaSy…\nAQ.abc123…"}
+            className="min-h-24 font-mono text-xs"
+            autoComplete="off"
+          />
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => void saveKeyPool()} disabled={busy || !poolText.trim()}>
+              {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <KeyRound className="mr-1 h-3.5 w-3.5" />}
+              Save pool
+            </Button>
+            {(aiConfig?.gemini.poolSize ?? 0) > 0 && (
+              <Button size="sm" variant="outline" className="text-destructive" onClick={() => void clearKeyPool()} disabled={busy}>
+                <Trash2 className="mr-1 h-3.5 w-3.5" /> Clear pool
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="flex justify-end">
         <Button onClick={() => void save()} disabled={busy}>

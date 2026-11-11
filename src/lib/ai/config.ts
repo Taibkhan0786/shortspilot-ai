@@ -97,7 +97,7 @@ export async function getGeminiTunables(): Promise<GeminiTunables> {
   return {
     temperature: num(t, DEFAULT_TUNABLES.temperature, 0, 2),
     supportTemperature: num(st, DEFAULT_TUNABLES.supportTemperature, 0, 1),
-    maxTokens: Math.round(num(mt, DEFAULT_TUNABLES.maxTokens, 256, 8192)),
+    maxTokens: Math.round(num(mt, DEFAULT_TUNABLES.maxTokens, 256, 16384)),
     timeoutMs: Math.round(num(to, DEFAULT_TUNABLES.timeoutMs / 1000, 10, 120) * 1000),
   };
 }
