@@ -66,3 +66,4 @@ server.log
 
 # downloadable project zips
 /public/downloads/
+.gh-token
