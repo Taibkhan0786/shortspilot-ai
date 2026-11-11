@@ -1,0 +1,15 @@
+# Render Blueprint: Dashboard → New → Blueprint → pick your GitHub repo.
+# A persistent disk is REQUIRED (database + generated videos live on it) → needs a paid instance type.
+services:
+  - type: web
+    name: shortspilot-ai
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/v1/health
+    disk:
+      name: shortspilot-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: SP_ENCRYPTION_KEY
+        generateValue: true

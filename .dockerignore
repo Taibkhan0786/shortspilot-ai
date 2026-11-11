@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+db
+download
+.env
+.env.*
+!.env.example
+public/uploads
+*.log
+.zscripts
+tests
+examples

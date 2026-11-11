@@ -1,0 +1,14 @@
+# Any VPS (Oracle Free Tier, Hetzner, DigitalOcean…):  docker compose up -d --build
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # generate with:  openssl rand -hex 32   (keep it forever — it encrypts the keys saved in /admin)
+      SP_ENCRYPTION_KEY: ${SP_ENCRYPTION_KEY:?set SP_ENCRYPTION_KEY in a .env file next to this file}
+    volumes:
+      - shortspilot-data:/data
+    restart: unless-stopped
+volumes:
+  shortspilot-data:

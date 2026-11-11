@@ -1,0 +1,513 @@
+// ShortsPilot AI — Database Schema (PRD §10)
+// SQLite via Prisma. JSON-ish fields are stored as String (SQLite-safe).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Identity & Tenancy
+// ============================================================
+
+model User {
+  id           String         @id @default(cuid())
+  email        String         @unique
+  name         String
+  passwordHash String
+  role         String         @default("USER") // USER | ADMIN
+  status       String         @default("ACTIVE") // ACTIVE | SUSPENDED
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  profile        UserProfile?
+  subscription   Subscription?
+  sessions       Session[]
+  channels       YouTubeChannel[]
+  ideas          ContentIdea[]
+  scripts        Script[]
+  videos         Video[]
+  assets         MediaAsset[]
+  automationRule AutomationRule?
+  creditLedger   CreditLedger[]
+  usageLogs      UsageLog[]
+  notifications  Notification[]
+  auditLogs      AuditLog[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model UserProfile {
+  id           String  @id @default(cuid())
+  userId       String  @unique
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName  String?
+  timezone     String  @default("Asia/Kolkata")
+  niche        String  @default("")
+  audience     String  @default("")
+  language     String  @default("English")
+  scriptStyle  String  @default("educational") // educational | storytelling | commentary | entertainment
+  voiceId      String  @default("tongtong")
+  voiceSpeed   Float   @default(1.0)
+  visualStyle  String  @default("cinematic") // cinematic | cartoon | realistic | minimalist
+  duration     Int     @default(45) // target Short duration (seconds)
+  videosPerWeek Int    @default(3)
+  publishDays  String  @default("1,2,3,4,5") // 0=Sun..6=Sat
+  publishTime  String  @default("18:00")
+  approvalMode String  @default("approval") // manual | approval | automatic
+  monthlyLimit Float   @default(50) // user-configured spending cap (credits)
+  onboarded    Boolean @default(false)
+}
+
+// ============================================================
+// Billing
+// ============================================================
+
+model Plan {
+  id            String @id
+  name          String
+  price         Float // monthly price (USD-equivalent display)
+  priceInr      Int?   // monthly price in INR (Razorpay), null = INR billing unavailable
+  shortsLimit   Int // videos per month
+  channelsLimit Int
+  watermark     Boolean @default(false)
+  features      String @default("[]") // JSON string[]
+  order         Int    @default(0)
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId         String
+  plan           Plan     @relation(fields: [planId], references: [id])
+  status         String   @default("TRIAL") // TRIAL | ACTIVE | CANCELLED | PAST_DUE
+  provider       String   @default("sandbox") // sandbox | stripe | razorpay
+  providerSubId  String?
+  periodStart    DateTime @default(now())
+  periodEnd      DateTime
+  cancelAtPeriodEnd Boolean @default(false)
+  createdAt      DateTime @default(now())
+  invoices       Invoice[]
+}
+
+model Invoice {
+  id             String       @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  amount         Float
+  status         String       @default("PAID") // PAID | PENDING | REFUNDED
+  description    String
+  providerRef    String?      // gateway order/payment reference (razorpay order id / paypal order id)
+  createdAt      DateTime     @default(now())
+
+  @@index([subscriptionId])
+}
+
+// ============================================================
+// YouTube channels
+// ============================================================
+
+model YouTubeChannel {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId         String // youtube channel id
+  channelTitle      String
+  handle            String? // @handle from the YouTube platform
+  description       String?
+  country           String?
+  thumbnail         String?
+  subscribers       Int       @default(0)
+  viewCount         Float     @default(0) // lifetime views (Float: exceeds Int32)
+  videoCount        Int       @default(0)
+  status            String    @default("CONNECTED") // CONNECTED | REVOKED | DISCONNECTED
+  encryptedToken    String? // encrypted OAuth refresh token at rest
+  accessToken       String? // encrypted short-lived access token
+  tokenExpiresAt    DateTime?
+  uploadsPlaylistId String? // uploads playlist used to list recent videos
+  scopes            String?
+  mode              String    @default("sandbox") // sandbox | oauth | apikey
+  channelCreatedAt  DateTime? // when the YouTube channel itself was created
+  connectedAt       DateTime  @default(now())
+  lastSyncedAt      DateTime?
+  lastSyncError     String?
+
+  settings       ChannelSettings?
+  videos         Video[]
+  ytVideos       YouTubeVideo[]
+  stats          ChannelStat[]
+  publishingJobs PublishingJob[]
+
+  @@index([userId])
+}
+
+/** Real uploads scraped from the connected YouTube channel (real-time dashboard). */
+model YouTubeVideo {
+  id          String         @id @default(cuid())
+  channelId   String
+  channel     YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  videoId     String         @unique
+  title       String
+  thumbnail   String?
+  publishedAt DateTime
+  views       Float          @default(0)
+  likes       Int            @default(0)
+  comments    Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([channelId, publishedAt])
+}
+
+/** Point-in-time channel stats for growth charts (captured on every sync). */
+model ChannelStat {
+  id          String         @id @default(cuid())
+  channelId   String
+  channel     YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  subscribers Float
+  views       Float
+  videoCount  Int
+  capturedAt  DateTime       @default(now())
+
+  @@index([channelId, capturedAt])
+}
+
+/** Instance-level settings (e.g. Google OAuth client credentials configured from the Admin UI). */
+model AppSetting {
+  key   String @id
+  value String
+}
+
+model ChannelSettings {
+  id          String         @id @default(cuid())
+  channelId   String         @unique
+  channel     YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  niche       String         @default("")
+  language    String         @default("English")
+  audience    String         @default("")
+  voiceId     String         @default("tongtong")
+  visualStyle String         @default("cinematic")
+}
+
+// ============================================================
+// Automation
+// ============================================================
+
+model AutomationRule {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enabled          Boolean   @default(false)
+  mode             String    @default("approval") // manual | approval | automatic
+  scheduleDays     String    @default("1,3,5") // weekday numbers
+  scheduleTime     String    @default("18:00") // HH:mm
+  timezone         String    @default("Asia/Kolkata")
+  dailyLimit       Int       @default(1)
+  weeklyLimit      Int       @default(3)
+  approvalRequired Boolean   @default(true)
+  budgetLimit      Float     @default(20)
+  niche            String    @default("")
+  lastRunAt        DateTime?
+  pausedAt         DateTime?
+  running          Boolean   @default(false) // overlap prevention lock
+}
+
+// ============================================================
+// Content pipeline
+// ============================================================
+
+model ContentIdea {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId String?
+  topic     String
+  hook      String   @default("")
+  angle     String   @default("")
+  language  String   @default("English")
+  duration  Int      @default(45)
+  sources   String? // JSON [{title,url,date}]
+  status    String   @default("SUGGESTED") // SUGGESTED | APPROVED | REJECTED | USED
+  score     Float    @default(0)
+  createdAt DateTime @default(now())
+
+  scripts Script[]
+
+  @@index([userId, status])
+}
+
+model Script {
+  id            String   @id @default(cuid())
+  ideaId        String?
+  idea          ContentIdea? @relation(fields: [ideaId], references: [id], onDelete: SetNull)
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic         String
+  language      String   @default("English")
+  tone          String   @default("educational")
+  duration      Int      @default(45)
+  version       Int      @default(1)
+  hook          String   @default("")
+  scenes        String   @default("[]") // JSON [{sceneNumber,narration,visualPrompt,caption}]
+  cta           String   @default("")
+  status        String   @default("DRAFT") // DRAFT | APPROVED
+  model         String?
+  warnings      String   @default("[]") // JSON string[] quality warnings
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  voiceovers Voiceover[]
+  videos     Video[]
+  visualJobs VisualJob[]
+
+  @@index([userId, status])
+}
+
+// Async scene-visuals generation job (avoids long-running HTTP requests -> 502)
+model VisualJob {
+  id           String    @id @default(cuid())
+  scriptId     String
+  script       Script    @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  userId       String
+  style        String    @default("cinematic")
+  sceneNumbers String    @default("[]") // JSON number[]; empty = all scenes
+  status       String    @default("QUEUED") // QUEUED | RUNNING | DONE | FAILED
+  progress     Int       @default(0)
+  stage        String    @default("")
+  totalScenes  Int       @default(0)
+  createdCount Int       @default(0)
+  failedCount  Int       @default(0)
+  error        String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([scriptId, createdAt])
+  @@index([userId, status])
+}
+
+model Voiceover {
+  id        String   @id @default(cuid())
+  scriptId  String
+  script    Script   @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  provider  String   @default("zai-tts")
+  voiceId   String
+  speed     Float    @default(1.0)
+  audioUrl  String
+  duration  Float    @default(0)
+  cost      Float    @default(0)
+  status    String   @default("READY") // READY | FAILED
+  sceneAudio String  @default("[]") // JSON [{sceneNumber,url,duration}]
+  createdAt DateTime @default(now())
+
+  @@index([scriptId])
+}
+
+model MediaAsset {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scriptId   String?
+  type       String   @default("image") // image | thumbnail
+  sceneNumber Int?
+  source     String   @default("generated") // generated | stock
+  provider   String   @default("zai-image")
+  assetUrl   String
+  prompt     String?
+  license    String   @default("AI generated — no attribution required")
+  metadata   String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, type])
+}
+
+// ============================================================
+// Videos, rendering, publishing
+// ============================================================
+
+model Video {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channelId    String?
+  channel      YouTubeChannel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  scriptId     String?
+  script       Script?   @relation(fields: [scriptId], references: [id], onDelete: SetNull)
+  title        String
+  description  String?
+  hashtags     String?
+  tags         String?
+  videoUrl     String?
+  thumbnailUrl String?
+  audioUrl     String? // final mixed audio (voiceover)
+  duration     Float     @default(0)
+  width        Int       @default(0)
+  height       Int       @default(0)
+  status       String    @default("DRAFT")
+  // DRAFT | RENDERING | QUALITY_CHECK | PENDING_APPROVAL | APPROVED | SCHEDULED
+  // PUBLISHED | FAILED | REJECTED | CANCELLED
+  progress     Int       @default(0)
+  statusMessage String?
+  watermarked  Boolean   @default(false)
+  scheduledAt  DateTime?
+  publishedAt  DateTime?
+  youtubeVideoId String?
+  youtubeUrl   String?
+  error        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  scenes        VideoScene[]
+  renderJobs    RenderJob[]
+  publishingJobs PublishingJob[]
+  analytics     VideoAnalytics[]
+
+  @@index([userId, status])
+}
+
+model VideoScene {
+  id          String  @id @default(cuid())
+  videoId     String
+  video       Video   @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  sceneNumber Int
+  narration   String
+  assetUrl    String?
+  audioUrl    String?
+  caption     String?
+  startTime   Float   @default(0)
+  endTime     Float   @default(0)
+
+  @@index([videoId])
+}
+
+model RenderJob {
+  id          String    @id @default(cuid())
+  videoId     String
+  video       Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  status      String    @default("QUEUED") // QUEUED | RUNNING | DONE | FAILED | CANCELLED
+  progress    Int       @default(0)
+  stage       String    @default("") // current stage description
+  worker      String?
+  attempts    Int       @default(0)
+  error       String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([status])
+}
+
+model PublishingJob {
+  id             String    @id @default(cuid())
+  videoId        String
+  video          Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  channelId      String
+  channel        YouTubeChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  scheduledAt    DateTime?
+  uploadStatus   String    @default("PENDING")
+  // PENDING | UPLOADING | PROCESSING | DONE | FAILED | CANCELLED
+  youtubeVideoId String?
+  youtubeUrl     String?
+  error          String?
+  idempotencyKey String    @unique
+  attempts       Int       @default(0)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([uploadStatus])
+}
+
+model VideoAnalytics {
+  id                String   @id @default(cuid())
+  videoId           String
+  video             Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  date              DateTime
+  views             Int      @default(0)
+  likes             Int      @default(0)
+  comments          Int      @default(0)
+  subscribersGained Int      @default(0)
+  watchTime         Float    @default(0)
+  avgViewDuration   Float    @default(0)
+
+  @@index([videoId, date])
+}
+
+// ============================================================
+// Usage, credits, ops
+// ============================================================
+
+model CreditLedger {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String // GRANT | CHARGE | RESERVE | RELEASE
+  amount      Float
+  balance     Float
+  referenceId String?
+  description String   @default("")
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+}
+
+model UsageLog {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String // llm | tts | image | search | render | upload
+  operation    String // idea | script | metadata | voiceover | visual | render | publish | research
+  units        Float    @default(1)
+  estimatedCost Float   @default(0)
+  actualCost   Float    @default(0)
+  referenceId  String?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // script_ready | render_started | video_ready | upload_started | upload_success | scheduled_published | generation_failed | oauth_expired | usage_limit | info
+  title     String
+  body      String?
+  payload   String?
+  link      String? // in-app deep link "view[:resourceId]" — e.g. "videos:cm_x" — opened when the notification is clicked
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action       String
+  resourceType String?
+  resourceId   String?
+  meta         String?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+}
