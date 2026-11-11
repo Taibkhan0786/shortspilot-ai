@@ -3,9 +3,9 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { saveBuffer } from "@/lib/storage";
-import { getElevenLabsKey } from "./config";
+import { getElevenLabsKey, getVoiceProvider } from "./config";
 import { geminiTtsWav, GEMINI_VOICE_MAP } from "./geminiTts";
-import { elevenLabsMp3 } from "./elevenlabs";
+import { elevenLabsMp3, ELEVEN_VOICES } from "./elevenlabs";
 import { detectLang } from "./lang";
 import { getOrderedKeys, withKeyPool } from "./keyPool";
 
@@ -190,11 +190,57 @@ async function googleTranslateTts(text: string, lang: "hi" | "en"): Promise<Buff
 let edgeDownUntil = 0;
 
 /**
+ * Gemini TTS via the account pool — shared helper so any voice (classic or
+ * Google) can be spoken by the Google AI Studio voices when "google" provider
+ * is selected or a g-* voice is requested.
+ */
+async function geminiTtsForVoice(text: string, voice: string, speed: number): Promise<Buffer | null> {
+  const keys = await getOrderedKeys().catch(() => [] as string[]);
+  if (keys.length === 0) return null;
+  const gVoice =
+    GOOGLE_VOICE_MAP[voice] ??
+    GEMINI_VOICE_MAP[EDGE_VOICE_MAP[voice] ?? "en-US-AriaNeural"] ??
+    "Kore";
+  const { result: wav } = await withKeyPool((key) => geminiTtsWav(text, gVoice, key), { classify: () => "next" });
+  console.error(`[tts] provider: Google AI Studio (Gemini TTS) voice ${gVoice}`);
+  return speed !== 1 ? await toWavViaFfmpeg(wav, "wav", speed) : wav;
+}
+
+/**
+ * ElevenLabs TTS — works for every catalog voice (classic ids map directly;
+ * Google g-* ids fall back to the closest natural ElevenLabs voice).
+ */
+async function elevenLabsForVoice(text: string, voice: string, speed: number): Promise<Buffer> {
+  const elKey = await getElevenLabsKey().catch(() => null);
+  if (!elKey) throw new Error("no ElevenLabs key configured");
+  const elVoice = isGoogleVoice(voice)
+    ? (ELEVEN_VOICES[GOOGLE_ELEVEN_FALLBACK[voice] ?? "tongtong"] ?? ELEVEN_VOICES.tongtong)
+    : (ELEVEN_VOICES[voice] ?? ELEVEN_VOICES.tongtong);
+  const mp3 = await elevenLabsMp3(text, voice, elKey);
+  console.error("[tts] provider: ElevenLabs");
+  const tempo = speed !== 1 ? Math.min(2, Math.max(0.5, speed)) : 1;
+  return await toWavViaFfmpeg(mp3, "mp3", tempo);
+}
+
+/** Google voice id → the ElevenLabs voice used when ElevenLabs is forced. */
+const GOOGLE_ELEVEN_FALLBACK: Record<string, string> = {
+  "g-kore": "tongtong",
+  "g-leda": "chuichui",
+  "g-aoede": "xiaochen",
+  "g-charon": "jam",
+  "g-puck": "kazi",
+  "g-orus": "douji",
+  "g-fenrir": "luodo",
+  "g-zephyr": "chuichui",
+};
+
+/**
  * Provider chain (best quality first), used when the built-in z-ai provider is unavailable:
  *   1. ElevenLabs   (if an API key is saved in Admin)  — most natural, Hindi supported
  *   2. Gemini TTS   (uses your saved Gemini key)       — natural, Hindi supported
  *   3. Edge neural  (free, but often blocked)
  *   4. Google Translate TTS (free, robotic — last resort)
+ * The admin voice_provider preference reorders/skips this chain.
  * Language is auto-detected (Hindi/Devanagari vs English) so the right voice is used.
  * Every failure is logged with its real reason.
  */
@@ -202,32 +248,72 @@ async function edgeTtsBuffer(text: string, voice: string, speed: number): Promis
   const errors: string[] = [];
   const lang = detectLang(text);
   const tempo = speed !== 1 ? Math.min(2, Math.max(0.5, speed)) : 1;
+  const provider = await getVoiceProvider().catch(() => "auto" as const);
 
-  // 1) ElevenLabs
-  const elKey = await getElevenLabsKey().catch(() => null);
-  if (elKey) {
+  // ——— Admin forced "edge": free neural voices only, no provider chain ———
+  if (provider === "edge") {
+    console.error("[tts] provider: Edge TTS (forced by admin voice provider = edge)");
+    const mp3 = await edgeTtsOnce(text, voice, speed, lang);
     try {
-      const mp3 = await elevenLabsMp3(text, voice, elKey);
-      console.error("[tts] provider: ElevenLabs");
-      return await toWavViaFfmpeg(mp3, "mp3", tempo);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      errors.push(`elevenlabs: ${msg.slice(0, 140)}`);
-      console.error(`[tts] ElevenLabs failed: ${msg}`);
+      return await toWavViaFfmpeg(mp3);
+    } catch {
+      return mp3;
     }
   }
 
-  // 2) Gemini TTS (pooled: every configured Google account is tried)
-  const keys = await getOrderedKeys().catch(() => [] as string[]);
-  if (keys.length > 0) {
+  // ——— Admin forced "elevenlabs": ElevenLabs first for EVERY voice ———
+  if (provider === "elevenlabs") {
+    try {
+      return await elevenLabsForVoice(text, voice, speed);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`elevenlabs: ${msg.slice(0, 140)}`);
+      console.error(`[tts] ElevenLabs (forced) failed: ${msg} — continuing down the chain`);
+    }
+  }
+
+  // ——— Admin forced "google": Google AI Studio voices first for EVERY voice ———
+  if (provider === "google") {
+    try {
+      const wav = await geminiTtsForVoice(text, voice, speed);
+      if (wav) return wav;
+      errors.push("google: no Gemini key configured in the account pool");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`google: ${msg.slice(0, 140)}`);
+      console.error(`[tts] Google TTS (forced) failed: ${msg} — continuing down the chain`);
+    }
+  }
+
+  // 1) ElevenLabs (auto mode only — forced mode already tried it above)
+  if (provider === "auto") {
+    const elKey = await getElevenLabsKey().catch(() => null);
+    if (elKey) {
+      try {
+        const mp3 = await elevenLabsMp3(text, voice, elKey);
+        console.error("[tts] provider: ElevenLabs");
+        return await toWavViaFfmpeg(mp3, "mp3", tempo);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`elevenlabs: ${msg.slice(0, 140)}`);
+        console.error(`[tts] ElevenLabs failed: ${msg}`);
+      }
+    }
+  }
+
+  // 2) Gemini TTS (pooled: every configured Google account is tried) — auto mode only
+  if (provider === "auto") {
     try {
       const gVoice = GEMINI_VOICE_MAP[EDGE_VOICE_MAP[voice] ?? "en-US-AriaNeural"] ?? "Kore";
-      const { result: wav } = await withKeyPool(
-        (key) => geminiTtsWav(text, gVoice, key),
-        { classify: () => "next" }
-      );
-      console.error("[tts] provider: Gemini TTS");
-      return tempo !== 1 ? await toWavViaFfmpeg(wav, "wav", tempo) : wav;
+      const keys = await getOrderedKeys().catch(() => [] as string[]);
+      if (keys.length > 0) {
+        const { result: wav } = await withKeyPool(
+          (key) => geminiTtsWav(text, gVoice, key),
+          { classify: () => "next" }
+        );
+        console.error("[tts] provider: Gemini TTS");
+        return tempo !== 1 ? await toWavViaFfmpeg(wav, "wav", tempo) : wav;
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`gemini: ${msg.slice(0, 140)}`);
@@ -283,6 +369,8 @@ async function edgeTtsBuffer(text: string, voice: string, speed: number): Promis
  * Providers:
  *   Google voices (g-*): Gemini TTS (pooled accounts) → Edge → Google Translate.
  *   Classic voices:      z-ai SDK → ElevenLabs → Gemini TTS (pooled) → Edge → Google Translate.
+ * The admin voice_provider preference (auto/elevenlabs/google/edge) reorders
+ * or replaces this chain — see edgeTtsBuffer for the forced modes.
  */
 export async function ttsBuffer(
   text: string,
@@ -290,9 +378,21 @@ export async function ttsBuffer(
   speed: number = 1.0
 ): Promise<Buffer> {
   const clampedSpeed = Math.min(2.0, Math.max(0.5, speed));
+  const provider = await getVoiceProvider().catch(() => "auto" as const);
+
+  // ——— Admin forced "elevenlabs": skip z-ai entirely, ElevenLabs speaks every voice ———
+  if (provider === "elevenlabs") {
+    return edgeTtsBuffer(text, voice, clampedSpeed);
+  }
+
+  // ——— Admin forced "edge": free neural voices only ———
+  if (provider === "edge") {
+    return edgeTtsBuffer(text, voice, clampedSpeed);
+  }
 
   // ——— Google voice selected: go straight to Gemini TTS with the account pool ———
   if (isGoogleVoice(voice)) {
+    // forced "google" mode: if the pool fails, try ElevenLabs before Edge
     const geminiName = GOOGLE_VOICE_MAP[voice] ?? "Kore";
     const keys = await getOrderedKeys().catch(() => [] as string[]);
     if (keys.length > 0) {
@@ -301,18 +401,30 @@ export async function ttsBuffer(
           (key) => geminiTtsWav(text, geminiName, key),
           { classify: () => "next" }
         );
-        console.error(`[tts] provider: Google Gemini TTS voice ${geminiName}`);
+        console.error(`[tts] provider: Google AI Studio (Gemini TTS) voice ${geminiName}`);
         if (clampedSpeed !== 1) return await toWavViaFfmpeg(wav, "wav", clampedSpeed);
         return wav;
       } catch (e) {
         console.error(
-          `[tts] Google Gemini TTS unavailable (${e instanceof Error ? e.message.slice(0, 140) : e}) — falling back to Edge neural voice`
+          `[tts] Google Gemini TTS unavailable (${e instanceof Error ? e.message.slice(0, 140) : e}) — falling back`
         );
       }
     } else {
-      console.error("[tts] Google voice selected but no Gemini key configured — using Edge fallback");
+      console.error("[tts] Google voice selected but no Gemini key configured — using fallback");
+    }
+    if (provider === "google") {
+      try {
+        return await elevenLabsForVoice(text, voice, clampedSpeed);
+      } catch (e) {
+        console.error(`[tts] ElevenLabs fallback failed (${e instanceof Error ? e.message.slice(0, 120) : e})`);
+      }
     }
     return edgeTtsBuffer(text, "tongtong", clampedSpeed);
+  }
+
+  // ——— Admin forced "google": Google AI Studio voices speak classic voices too ———
+  if (provider === "google") {
+    return edgeTtsBuffer(text, voice, clampedSpeed);
   }
 
   const backoffs = [4000, 12000, 30000]; // ~46s max total wait

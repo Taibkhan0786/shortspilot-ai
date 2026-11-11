@@ -10,7 +10,7 @@ ShortsPilot AI is a multi-tenant SaaS that automates the entire YouTube Shorts p
 
 1. **Generates content ideas** with an LLM (search-grounded, niche-aware)
 2. **Writes a scene-by-scene script** — hook → body scenes → CTA, with visual prompts & captions per scene
-3. **Produces a natural voiceover** with TTS (7 voices, speed control, per-scene or full narration)
+3. **Produces a natural voiceover** with TTS (Google AI Studio voices, ElevenLabs, or free Edge voices — speed control, per-scene or full narration)
 4. **Creates cinematic AI visuals** for every scene (4 styles: cinematic / cartoon / realistic / minimalist)
 5. **Renders a real vertical MP4** (9:16, 1080×1920) with FFmpeg — images + audio + captions
 6. **Runs a quality check**, then sends the video to your **approval queue**
@@ -59,7 +59,7 @@ Everything is metered with **credits**, gated by **plan limits**, and observable
 |---|---|---|
 | **Idea generation** | LLM + optional web research produces trending ideas for your niche/language | 1 |
 | **Script generation** | Structured scene JSON: hook, 4–8 scenes (narration + visualPrompt + caption), CTA, duration estimate. Regenerate makes a new version | 2 |
-| **Voiceover** | Full narration track + per-scene audio chunks via TTS. Failed calls retry with exponential backoff | 4 |
+| **Voiceover** | Full narration track + per-scene audio chunks via TTS. Failed calls retry with exponential backoff. The admin picks which engine speaks first (Voice provider setting) | 4 |
 | **Visuals** | One AI image per scene in your chosen style. Runs as an **async VisualJob** (never blocks HTTP — avoids gateway 502s); client polls `/visuals/status` for live progress. Rate-limited calls retry with backoff | 1.5/scene |
 | **Render** | Background worker: builds each scene segment (image + audio), concatenates with FFmpeg, adds captions → 9:16 MP4. Credits refunded automatically on failure | 3 |
 | **Quality check** | Worker validates duration/size, then sets `PENDING_APPROVAL` | — |
@@ -204,7 +204,7 @@ The login screen has a **“Continue with Google”** button. It uses the **same
 | **AI Studio** | The one-screen creator flow: pick an idea → generate script → approve it → generate voice + visuals → assemble video. Live progress on visuals (scene counter) and render (% + stage) |
 | **Content Ideas** | Generate trending ideas (LLM + research) for your niche; save / use an idea |
 | **Scripts** | Every script version; inline editor for hook/scenes/captions; approve; regenerate (new version); delete. *Notification deep-link opens the exact script expanded* |
-| **Voice Library** | 7 voices with previews; voiceover jobs and their audio tracks |
+| **Voice Library** | Google AI Studio voices (Kore, Puck, Charon…) + classic voices with previews; voiceover jobs and their audio tracks |
 | **Media Library** | All generated scene images; regenerate individual scenes |
 | **Video Library** | All Shorts: preview player, approve/reject, upload, retry render, edit metadata (title/description/hashtags), download MP4, delete. Auto-polling while rendering. *Deep-link scrolls + highlights the video* |
 | **Content Calendar** | Scheduled publishing across channels |
@@ -305,6 +305,31 @@ The E2E suite registers a fresh user, runs the whole pipeline (ideas → scripts
 ---
 
 ## 10. Troubleshooting / FAQ
+
+### Voices — which engine speaks?
+
+| Setting (Admin → API & Integrations → Voice) | What happens |
+|---|---|
+| **Auto (recommended)** | ElevenLabs (if key) → Google AI Studio (Gemini TTS, if pool keys) → free Edge → Google Translate |
+| **ElevenLabs first** | Every voice is spoken by ElevenLabs (most natural, Hindi supported). Falls back down the chain only if ElevenLabs fails |
+| **Google AI Studio first** | Every voice is spoken by the original Google voices (Gemini TTS) through your pooled Gemini keys |
+| **Free Edge only** | Zero cost, no keys — neural but "assistant-like" voices |
+
+- Google original voices (Kore, Puck, Charon, Leda, Zephyr, Fenrir, Aoede, Orus) are the **g-\*** entries in the Voice Library — they always use Gemini TTS via the account pool.
+- No key at all → the app falls back to free Edge neural voices (the "browser-like" voices).
+
+### Veo cinematic motion (Flow-style) — why is my video zoom-pan?
+
+Veo is a **paid-only** Google API: it needs a Gemini API key from a project with **billing enabled** (free-tier keys cannot call Veo). Without a working Veo key the renderer automatically falls back to cinematic zoom-pan. To verify your setup:
+
+1. Admin → API & Integrations → paste your billing-enabled key(s) into the **Gemini account pool**
+2. Toggle **Veo cinematic motion** ON, pick an engine (Veo 3 = best quality, Omni Flash = fastest)
+3. Click **Test Veo** — it generates one short real clip and shows the exact result:
+   - `Veo works — veo-3.0-…` → renders will use real Flow-style AI motion
+   - `billing is not enabled…` → enable billing on the key's Google project, then retest
+   - `No Gemini API keys in the account pool…` → add a key first
+
+A successful test consumes one short (~4 s) Veo clip.
 
 | Symptom | Cause & fix |
 |---|---|

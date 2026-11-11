@@ -7,6 +7,7 @@ import {
   getAiSetting,
   getElevenLabsKey,
   getGeminiTunables,
+  getVoiceProvider,
   invalidateAiConfigCache,
   GEMINI_TUNABLE_DEFAULTS,
 } from "@/lib/ai/config";
@@ -39,6 +40,7 @@ export const GET = handler(async (req: NextRequest) => {
       poolKeys: pool.map(maskKey),
     },
     elevenlabs: { configured: Boolean(await getElevenLabsKey().catch(() => null)) },
+    voiceProvider: await getVoiceProvider(),
     tunables: {
       ...tunables,
       defaults: GEMINI_TUNABLE_DEFAULTS,
@@ -75,6 +77,8 @@ const schema = z.object({
   // --- Veo cinematic motion toggle + engine ---
   veoEnabled: z.boolean().optional(),
   veoEngine: z.enum(["veo3", "omni"]).optional(),
+  // --- Voice provider preference (which TTS speaks first) ---
+  voiceProvider: z.enum(["auto", "elevenlabs", "google", "edge"]).optional(),
 });
 
 async function setNumberSetting(key: string, value: number | null | undefined, fallback: number) {
@@ -130,6 +134,9 @@ export const POST = handler(async (req: NextRequest) => {
   if (body.veoEngine !== undefined) {
     await setSettingValue("veo_engine", body.veoEngine);
   }
+  if (body.voiceProvider !== undefined) {
+    await setSettingValue("voice_provider", body.voiceProvider);
+  }
   invalidateAiConfigCache();
 
   const pool = await getGeminiKeyPool().catch(() => [] as string[]);
@@ -158,6 +165,7 @@ export const POST = handler(async (req: NextRequest) => {
       poolKeys: pool.map(maskKey),
     },
     elevenlabs: { configured: Boolean(await getElevenLabsKey().catch(() => null)) },
+    voiceProvider: await getVoiceProvider(),
     tunables: { ...(await getGeminiTunables()), defaults: GEMINI_TUNABLE_DEFAULTS },
     veo: {
       enabled: (await getAiSetting("veo_enabled").catch(() => null)) === "true",

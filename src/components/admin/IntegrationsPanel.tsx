@@ -83,6 +83,7 @@ export function IntegrationsPanel() {
   const [tunables, setTunables] = useState<Tunables | null>(null);
   const [veoEnabled, setVeoEnabled] = useState(false);
   const [veoEngine, setVeoEngine] = useState<"veo3" | "omni">("veo3");
+  const [veoTestBusy, setVeoTestBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [clearTarget, setClearTarget] = useState<"google" | "apiKey" | null>(null);
 
@@ -291,6 +292,25 @@ export function IntegrationsPanel() {
     const next: Tunables = { ...d };
     setTunables(next);
     void saveTunables(next);
+  }
+
+  async function runVeoTest() {
+    setVeoTestBusy(true);
+    try {
+      const res = await api.post<{ ok: boolean; model?: string; seconds?: number; clipKb?: number; note?: string; error?: string }>(
+        "/api/v1/admin/veo/test",
+        {}
+      );
+      if (res.ok) {
+        toast.success(`Veo works — ${res.model}, ${res.clipKb} KB test clip in ${res.seconds}s. Renders will use real Flow-style motion.`);
+      } else {
+        toast.error(res.error ?? "Veo test failed", { duration: 12000 });
+      }
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setVeoTestBusy(false);
+    }
   }
 
   if (!config) return <div className="flex justify-center py-16"><Spinner className="h-6 w-6 text-primary" /></div>;
@@ -559,14 +579,20 @@ export function IntegrationsPanel() {
                   </p>
                 </div>
               </div>
-              <Switch
-                checked={veoEnabled}
-                onCheckedChange={(v) => {
-                  setVeoEnabled(v);
-                  void saveTunables(undefined, v);
-                }}
-                aria-label="Toggle Veo cinematic motion"
-              />
+              <div className="flex shrink-0 items-center gap-2">
+                <Button size="sm" variant="outline" className="h-8" disabled={veoTestBusy} onClick={() => void runVeoTest()} title="Generate one short test clip to verify Veo works (shows the exact provider error if it does not)">
+                  {veoTestBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Clapperboard className="mr-1 h-3.5 w-3.5" />}
+                  Test Veo
+                </Button>
+                <Switch
+                  checked={veoEnabled}
+                  onCheckedChange={(v) => {
+                    setVeoEnabled(v);
+                    void saveTunables(undefined, v);
+                  }}
+                  aria-label="Toggle Veo cinematic motion"
+                />
+              </div>
             </div>
             {veoEnabled && (
               <div className="space-y-2.5 rounded-lg border border-border/60 bg-accent/20 p-3">

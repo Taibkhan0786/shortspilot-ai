@@ -51,6 +51,23 @@ export async function getElevenLabsKey(): Promise<string | null> {
   return cached("elevenlabs_api_key", true);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Voice provider preference (Admin -> API & Integrations -> Voice)   */
+/* ------------------------------------------------------------------ */
+
+export type VoiceProvider = "auto" | "elevenlabs" | "google" | "edge";
+
+/** Which TTS provider is tried FIRST for voiceovers (admin choice, cached):
+ *  - "auto"        : smart chain (ElevenLabs → Gemini TTS → Edge → Translate)
+ *  - "elevenlabs"  : force ElevenLabs first for every voice (most natural)
+ *  - "google"      : force Google AI Studio voices (Gemini TTS) first
+ *  - "edge"        : free Edge neural voices only (no keys needed)
+ */
+export async function getVoiceProvider(): Promise<VoiceProvider> {
+  const v = (await cached("voice_provider", false))?.trim();
+  return v === "elevenlabs" || v === "google" || v === "edge" ? v : "auto";
+}
+
 export function setAiSettingDirect(value: string | null): void {
   // reserved for future sync use
   void value;
